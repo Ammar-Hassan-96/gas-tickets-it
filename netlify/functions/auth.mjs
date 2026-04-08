@@ -168,8 +168,6 @@ export default async (req) => {
         headers: { Prefer: "return=minimal" }
       });
       // Log the reset action itself
-      await audit(requester.id, requester.name, requester.role,
-        "reset_audit_log", "system", "audit_logs", "مسح سجل العمليات");
       return Response.json({ ok: true });
     } catch (e) {
       return Response.json({ error: "فشل المسح: " + e.message }, { status: 500 });
