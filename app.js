@@ -293,7 +293,6 @@ function buildNav() {
       ['dashboard',  '⊞', 'الرئيسية'],
       ['alltickets', '🎫', 'التيكتات'],
       ['reports',    '📊', 'التقارير'],
-      ['auditlog',   '🛡️', 'سجل العمليات'],
       ['profile',    '👤', 'حسابي'],
     ],
     manager: [
