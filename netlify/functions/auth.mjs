@@ -152,6 +152,87 @@ export default async (req) => {
     return Response.json({ ok: true });
   }
 
+
+  // ── RESET AUDIT LOG ──────────────────────────────────
+  if (action === "reset_audit_log") {
+    const { token } = body;
+    let requester;
+    try { requester = await validateToken(token); }
+    catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
+    if (requester.role !== "manager") {
+      return Response.json({ error: "هذه العملية للمديرين فقط" }, { status: 403 });
+    }
+    try {
+      await sb("/audit_logs?id=neq.00000000-0000-0000-0000-000000000000", {
+        method: "DELETE",
+        headers: { Prefer: "return=minimal" }
+      });
+      // Log the reset action itself
+      await audit(requester.id, requester.name, requester.role,
+        "reset_audit_log", "system", "audit_logs", "مسح سجل العمليات");
+      return Response.json({ ok: true });
+    } catch (e) {
+      return Response.json({ error: "فشل المسح: " + e.message }, { status: 500 });
+    }
+  }
+
+  // ── CHANGE PASSWORD ───────────────────────────────────
+  if (action === "change_password") {
+    const { token, old_password, new_password } = body;
+    if (!token || !old_password || !new_password) {
+      return Response.json({ error: "بيانات ناقصة" }, { status: 400 });
+    }
+    if (new_password.length < 6) {
+      return Response.json({ error: "كلمة المرور لازم تكون 6 أحرف على الأقل" }, { status: 400 });
+    }
+    let requester;
+    try { requester = await validateToken(token); }
+    catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
+    // Verify old password
+    const oldHash = sha256(old_password);
+    const check = await sb(
+      `/users?id=eq.${requester.id}&password_hash=eq.${oldHash}&select=id`
+    ).catch(() => null);
+    if (!check?.length) {
+      return Response.json({ error: "كلمة المرور الحالية غير صحيحة" }, { status: 401 });
+    }
+    const newHash = sha256(new_password);
+    try {
+      await sb(`/users?id=eq.${requester.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ password_hash: newHash }),
+        headers: { Prefer: "return=minimal" }
+      });
+      return Response.json({ ok: true });
+    } catch (e) {
+      return Response.json({ error: "فشل التغيير: " + e.message }, { status: 500 });
+    }
+  }
+
+  // ── GET ACTIVE SESSIONS ───────────────────────────────
+  if (action === "get_sessions") {
+    const { token } = body;
+    let requester;
+    try { requester = await validateToken(token); }
+    catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
+    if (requester.role !== "manager") {
+      return Response.json({ error: "هذه العملية للمديرين فقط" }, { status: 403 });
+    }
+    try {
+      const sessions = await sb(
+        `/sessions?expires_at=gt.${new Date().toISOString()}&select=user_id,created_at,expires_at`
+      );
+      // Count active sessions per user
+      const counts = {};
+      (sessions || []).forEach(s => {
+        counts[s.user_id] = (counts[s.user_id] || 0) + 1;
+      });
+      return Response.json({ sessions: counts, total: (sessions || []).length });
+    } catch (e) {
+      return Response.json({ error: e.message }, { status: 500 });
+    }
+  }
+
   return Response.json({ error: "Unknown action" }, { status: 400 });
 };
 
