@@ -718,11 +718,12 @@ async function addComment(ticketId) {
 }
 
 // ── Delete Ticket ─────────────────────────────────────────
-function deleteTicket(id) {
+async function deleteTicket(id) {
   const t = S.tickets.find(t=>t.id===id);
   if (!t) return;
-  showConfirm('🗑️','حذف التيكت',`هل أنت متأكد من حذف التيكت "${t.title}"؟ هذا الإجراء لا يمكن التراجع عنه.`, async()=>{
-    try {
+  if (!window.confirm(`هل أنت متأكد من حذف التيكت "${t.title}"؟\nهذا الإجراء لا يمكن التراجع عنه.`)) return;
+  try {
+  const t = S.tickets.find(t=>t.id===id);
       await sbFetch(`/ticket_comments?ticket_id=eq.${id}`,{method:'DELETE'});
       await sbFetch(`/tickets?id=eq.${id}`,{method:'DELETE'});
       S.tickets = S.tickets.filter(t=>t.id!==id);
@@ -730,7 +731,6 @@ function deleteTicket(id) {
       if (S.page==='detail') showPage('alltickets');
       else renderAllTickets();
     } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
-  });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -916,19 +916,19 @@ async function saveUser() {
   }
 }
 
-function deleteUser(id) {
+async function deleteUser(id) {
   const u = S.users.find(u=>u.id===id);
   if (!u) return;
   if (id===S.user.id) { toast('لا يمكنك حذف حسابك الخاص','warning'); return; }
   if (['ammar.admin'].includes(u.username)) { toast('هذا الحساب محمي ولا يمكن حذفه','error'); return; }
-  showConfirm('🗑️','حذف المستخدم',`هل أنت متأكد من حذف "${u.name}"؟ لا يمكن التراجع عن هذا الإجراء.`, async()=>{
-    try {
-      await sbFetch(`/users?id=eq.${id}`,{method:'DELETE'});
-      S.users = S.users.filter(u=>u.id!==id);
-      renderUsers();
-      toast('تم حذف حساب '+u.name);
-    } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
-  });
+  if (!window.confirm(`هل أنت متأكد من حذف "${u.name}"؟
+لا يمكن التراجع عن هذا الإجراء.`)) return;
+  try {
+    await sbFetch(`/users?id=eq.${id}`,{method:'DELETE'});
+    S.users = S.users.filter(u=>u.id!==id);
+    renderUsers();
+    toast('تم حذف حساب '+u.name);
+  } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1000,23 +1000,13 @@ function renderReports() {
   `;
 }
 
-function confirmResetStats() {
-  showConfirm('🔄','إعادة ضبط الإحصاءات',
-    'هذا الإجراء سيؤدي إلى أرشفة جميع التيكتات المغلقة والمحلولة وإعادة العدادات. هل أنت متأكد؟',
-    async()=>{
-      try {
-        // Archive: mark old resolved/closed tickets
+async function confirmResetStats() {
+  if (!window.confirm('هذا الإجراء سيؤدي إلى أرشفة جميع التيكتات المغلقة والمحلولة.\nهل أنت متأكد؟')) return;
         await sbFetch('/tickets?status=in.(resolved,closed)',{
-          method:'PATCH',
-          body:JSON.stringify({ status:'closed', updated_at:new Date().toISOString() }),
-          headers:{'Prefer':'return=minimal'}
-        });
         await loadTickets();
         renderReports();
         toast('تم إعادة الضبط وأرشفة التيكتات المنتهية');
       } catch(e){ toast('فشل: '+e.message,'error'); }
-    }
-  );
 }
 
 // ═══════════════════════════════════════════════════════
