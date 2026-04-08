@@ -866,6 +866,7 @@ function renderUsers() {
         </div>
         <div class="uc-actions">
           <button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;" onclick="editUser('${u.id}')">تعديل</button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;border-color:var(--warning);color:var(--warning);" onclick="resetUserPassword('${u.id}','${u.name}')">🔑 تعيين كلمة مرور</button>
           <button class="btn btn-danger" style="font-size:11px;padding:5px 10px;" onclick="deleteUser('${u.id}')">حذف</button>
         </div>
       </div>
@@ -982,6 +983,29 @@ async function deleteUser(id) {
     renderUsers();
     toast('تم حذف حساب '+u.name);
   } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
+}
+
+// ── Reset User Password (Manager only) ─────────────────
+async function resetUserPassword(userId, userName) {
+  const newPass = window.prompt(`إعادة تعيين كلمة مرور "${userName}"\nأدخل كلمة المرور الجديدة (6 أحرف على الأقل):`);
+  if (!newPass) return; // cancelled
+  if (newPass.length < 6) { toast('كلمة المرور لازم تكون 6 أحرف على الأقل', 'error'); return; }
+
+  try {
+    const res = await fetch(CFG.authEndpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        action: 'reset_user_password',
+        token: S.token,
+        user_id: userId,
+        new_password: newPass
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'فشل التعيين');
+    toast(`✅ تم تعيين كلمة مرور جديدة لـ ${userName}`);
+  } catch(e) { toast('فشل: ' + e.message, 'error'); }
 }
 
 // ═══════════════════════════════════════════════════════
