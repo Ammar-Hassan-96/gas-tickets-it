@@ -984,7 +984,7 @@ body {
             <p class="ph-sub">إدارة حسابات الموظفين وفريق IT</p>
           </div>
           <div class="ph-right">
-            <button class="btn btn-gold" onclick="openModal('newUserModal')">
+            <button class="btn btn-gold" onclick="openNewUserModal()">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               مستخدم جديد
             </button>
@@ -1145,7 +1145,7 @@ body {
     <div class="confirm-title" id="confirmTitle"></div>
     <div class="confirm-msg" id="confirmMsg"></div>
     <div class="confirm-btns">
-      <button class="btn btn-danger" id="confirmOkBtn">تأكيد</button>
+      <button class="btn btn-danger" id="confirmOkBtn" onclick="confirmOk()">تأكيد</button>
       <button class="btn btn-ghost" onclick="closeConfirm()">إلغاء</button>
     </div>
   </div>

