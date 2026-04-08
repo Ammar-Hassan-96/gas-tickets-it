@@ -966,13 +966,80 @@ async function deleteUser(id) {
 //  REPORTS
 // ═══════════════════════════════════════════════════════
 function renderReports() {
-  const tickets = S.tickets;
-  const total   = tickets.length;
-  const resolved= tickets.filter(t=>['resolved','closed'].includes(t.status)).length;
-  const open    = tickets.filter(t=>['open','assigned'].includes(t.status)).length;
-  const crit    = tickets.filter(t=>t.priority==='critical').length;
-  const resRate = total?Math.round(resolved/total*100):0;
+  const isManager = S.user.role === 'manager';
+  const tickets   = S.tickets;
+  const total     = tickets.length;
+  const resolved  = tickets.filter(t=>['resolved','closed'].includes(t.status)).length;
+  const open      = tickets.filter(t=>['open','assigned'].includes(t.status)).length;
+  const crit      = tickets.filter(t=>t.priority==='critical').length;
+  const resRate   = total?Math.round(resolved/total*100):0;
 
+  // Control reset button visibility
+  const _resetBtn = $('resetStatsBtn');
+  if (_resetBtn) _resetBtn.style.display = isManager ? '' : 'none';
+
+  // ── Stats row — same for everyone ───────────────────
+  const statsHtml = `
+    <div class="stats-row" style="margin-bottom:22px;">
+      ${[
+        ['معدل الحل',      total?resRate+'%':'—', 'من إجمالي التيكتات', '#4ADE80'],
+        ['إجمالي التيكتات', total,                 'منذ البداية',         '#60A5FA'],
+        ['قيد الانتظار',   open,                  'تحتاج إجراء',         '#FCD34D'],
+        ['حرجة',           crit,                  'أولوية قصوى',          '#F87171'],
+      ].map(([l,v,h,c])=>`
+        <div class="stat-card" style="--_acc:${c}">
+          <div class="stat-label">${l}</div>
+          <div class="stat-val" style="color:${c}">${v}</div>
+          <div class="stat-hint">${h}</div>
+        </div>`).join('')}
+    </div>`;
+
+  // ── Admin: only sees their own performance ───────────
+  if (!isManager) {
+    const myAssigned = tickets.filter(t=>t.assigned_to===S.user.id).length;
+    const myDone     = tickets.filter(t=>t.assigned_to===S.user.id&&['resolved','closed'].includes(t.status)).length;
+    const myOpen     = tickets.filter(t=>t.assigned_to===S.user.id&&['open','assigned','in_progress'].includes(t.status)).length;
+    const myRate     = myAssigned?Math.round(myDone/myAssigned*100):0;
+
+    $('reportsContent').innerHTML = statsHtml + `
+      <div class="tbl-wrap" style="margin-bottom:20px;">
+        <div class="tbl-head"><span class="tbl-head-title">أدائي الشخصي</span></div>
+        <table class="data-tbl">
+          <thead><tr><th>معين لي</th><th>محلولة</th><th>قيد التنفيذ</th><th>معدل الحل</th><th>الأداء</th></tr></thead>
+          <tbody><tr>
+            <td><strong>${myAssigned}</strong></td>
+            <td style="color:#4ADE80;">${myDone}</td>
+            <td style="color:#FCD34D;">${myOpen}</td>
+            <td style="font-family:var(--font-mono);">${myRate}%</td>
+            <td style="min-width:160px;">
+              <div class="sla-bar" style="height:8px;">
+                <div class="sla-fill ${myRate>=80?'sla-ok':myRate>=50?'sla-warn':'sla-crit'}" style="width:${myRate}%"></div>
+              </div>
+              <div style="font-size:10px;color:var(--text-muted);margin-top:3px;">${myRate>=80?'ممتاز 🌟':myRate>=50?'جيد':'يحتاج تحسين'}</div>
+            </td>
+          </tr></tbody>
+        </table>
+      </div>
+      <div class="tbl-wrap">
+        <div class="tbl-head"><span class="tbl-head-title">توزيع تيكتاتي حسب الفئة</span></div>
+        <table class="data-tbl">
+          <thead><tr><th>الفئة</th><th>إجمالي</th><th>مفتوح</th><th>محلول</th></tr></thead>
+          <tbody>${Object.entries(CAT_L).map(([k,v])=>{
+            const cat=tickets.filter(t=>t.assigned_to===S.user.id&&t.category===k);
+            if(!cat.length) return '';
+            return `<tr>
+              <td>${v}</td><td>${cat.length}</td>
+              <td>${cat.filter(t=>['open','assigned','in_progress'].includes(t.status)).length}</td>
+              <td>${cat.filter(t=>['resolved','closed'].includes(t.status)).length}</td>
+            </tr>`;
+          }).join('')||'<tr><td colspan="4"><div class="empty-state"><p>لا توجد تيكتات معينة لك</p></div></td></tr>'}
+          </tbody>
+        </table>
+      </div>`;
+    return;
+  }
+
+  // ── Manager: sees full team performance ──────────────
   const itUsers = S.users.filter(u=>u.role==='admin');
   const perf = itUsers.map(u=>{
     const asgn= tickets.filter(t=>t.assigned_to===u.id).length;
@@ -980,21 +1047,7 @@ function renderReports() {
     return {name:u.name, asgn, done, rate:asgn?Math.round(done/asgn*100):0};
   });
 
-  $('reportsContent').innerHTML = `
-    <div class="stats-row" style="margin-bottom:22px;">
-      ${[
-        ['معدل الحل',total?resRate+'%':'—','من إجمالي التيكتات','#4ADE80'],
-        ['إجمالي التيكتات',total,'منذ البداية','#60A5FA'],
-        ['قيد الانتظار',open,'تحتاج إجراء','#FCD34D'],
-        ['حرجة',crit,'أولوية قصوى','#F87171'],
-      ].map(([l,v,h,c])=>`
-        <div class="stat-card" style="--_acc:${c}">
-          <div class="stat-label">${l}</div>
-          <div class="stat-val" style="color:${c}">${v}</div>
-          <div class="stat-hint">${h}</div>
-        </div>`).join('')}
-    </div>
-
+  $('reportsContent').innerHTML = statsHtml + `
     <div class="tbl-wrap" style="margin-bottom:20px;">
       <div class="tbl-head"><span class="tbl-head-title">أداء فريق IT</span></div>
       <table class="data-tbl">
@@ -1012,7 +1065,6 @@ function renderReports() {
         </tbody>
       </table>
     </div>
-
     <div class="tbl-wrap">
       <div class="tbl-head"><span class="tbl-head-title">التوزيع حسب الفئة</span></div>
       <table class="data-tbl">
@@ -1027,8 +1079,7 @@ function renderReports() {
           </tr>`;
         }).join('')}</tbody>
       </table>
-    </div>
-  `;
+    </div>`;
 }
 
 async function confirmResetStats() {
