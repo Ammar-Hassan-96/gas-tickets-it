@@ -415,10 +415,14 @@ function renderDashCharts(tickets) {
   const total   = tickets.length;
   const divisor = total || 1; // avoid division by zero
   const colors = ['#B8975A','#60A5FA','#4ADE80','#F87171','#FCD34D','#C084FC','#22D3EE','#FB923C'];
-  // If no tickets, show empty donut
+  // Build donut: empty state if no tickets
+  let donutHtml;
   if (total === 0) {
-    return `<div class="chart-card c5"><div class="ch-head"><div><div class="ch-title">التوزيع حسب الفئة</div><div class="ch-sub">0 إجمالي</div></div></div><div class="empty-state" style="padding:24px;"><p>لا توجد تيكتات</p></div></div>`;
-  }
+    donutHtml = `<div class="chart-card c5">
+      <div class="ch-head"><div><div class="ch-title">التوزيع حسب الفئة</div><div class="ch-sub">0 إجمالي</div></div></div>
+      <div class="empty-state" style="padding:24px;"><p>لا توجد تيكتات</p></div>
+    </div>`;
+  } else {
   const catList = Object.entries(cats).sort((a,b)=>b[1]-a[1]).slice(0,6);
   const R=38, circ=2*Math.PI*R;
   let off=0;
@@ -429,7 +433,7 @@ function renderDashCharts(tickets) {
     return {label:CAT_L[c[0]]||c[0],val:c[1],color:colors[i],d,g,o};
   });
 
-  const donutHtml = `
+  donutHtml = `
     <div class="chart-card c5">
       <div class="ch-head"><div><div class="ch-title">التوزيع حسب الفئة</div><div class="ch-sub">${total} إجمالي</div></div></div>
       <div class="donut-wrap">
@@ -445,6 +449,8 @@ function renderDashCharts(tickets) {
         `).join('')}</div>
       </div>
     </div>`;
+
+  } // end else (tickets exist)
 
   // Recent tickets table
   const recent = [...myTickets()].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,5);
