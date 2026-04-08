@@ -293,6 +293,7 @@ function buildNav() {
       ['dashboard',  '⊞', 'الرئيسية'],
       ['alltickets', '🎫', 'التيكتات'],
       ['reports',    '📊', 'التقارير'],
+      ['auditlog',   '🛡️', 'سجل العمليات'],
       ['profile',    '👤', 'حسابي'],
     ],
     manager: [
@@ -300,6 +301,7 @@ function buildNav() {
       ['alltickets', '🎫', 'التيكتات'],
       ['users',      '👥', 'المستخدمون'],
       ['reports',    '📊', 'التقارير'],
+      ['auditlog',   '🛡️', 'سجل العمليات'],
       ['profile',    '👤', 'حسابي'],
     ],
   };
@@ -332,6 +334,7 @@ function showPage(id) {
     alltickets: renderAllTickets,
     users:    renderUsers,
     reports:  renderReports,
+    auditlog: renderAuditLog,
     profile:  renderProfile,
   };
   if (renders[id]) renders[id]();
@@ -723,8 +726,13 @@ async function deleteTicket(id) {
   if (!t) return;
   if (!window.confirm(`هل أنت متأكد من حذف التيكت "${t.title}"؟\nهذا الإجراء لا يمكن التراجع عنه.`)) return;
   try {
-    await sbFetch(`/ticket_comments?ticket_id=eq.${id}`,{method:'DELETE'});
-    await sbFetch(`/tickets?id=eq.${id}`,{method:'DELETE'});
+    const res = await fetch(CFG.authEndpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'delete_ticket', token:S.token, ticket_id:id })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'فشل الحذف');
     S.tickets = S.tickets.filter(t=>t.id!==id);
     toast('تم حذف التيكت');
     if (S.page==='detail') showPage('alltickets');
@@ -750,9 +758,8 @@ async function submitTicket() {
 
   if (!title||!category||!desc) { toast('يرجى ملء جميع الحقول','error'); return; }
 
-  const num = `GAS-${new Date().getFullYear()}-${String(S.tickets.length+1).padStart(4,'0')}`;
   const ticket = {
-    ticket_number: num, title, category, priority, description:desc,
+    title, category, priority, description:desc,
     status:'open', created_by:S.user.id, assigned_to:null,
   };
 
@@ -920,10 +927,15 @@ async function deleteUser(id) {
   if (!u) return;
   if (id===S.user.id) { toast('لا يمكنك حذف حسابك الخاص','warning'); return; }
   if (['ammar.admin'].includes(u.username)) { toast('هذا الحساب محمي ولا يمكن حذفه','error'); return; }
-  if (!window.confirm(`هل أنت متأكد من حذف "${u.name}"؟
-لا يمكن التراجع عن هذا الإجراء.`)) return;
+  if (!window.confirm(`هل أنت متأكد من حذف "${u.name}"؟\nلا يمكن التراجع عن هذا الإجراء.`)) return;
   try {
-    await sbFetch(`/users?id=eq.${id}`,{method:'DELETE'});
+    const res = await fetch(CFG.authEndpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'delete_user', token:S.token, user_id:id })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'فشل الحذف');
     S.users = S.users.filter(u=>u.id!==id);
     renderUsers();
     toast('تم حذف حساب '+u.name);
@@ -1011,6 +1023,58 @@ async function confirmResetStats() {
     renderReports();
     toast('تم إعادة الضبط وأرشفة التيكتات المنتهية');
   } catch(e){ toast('فشل: '+e.message,'error'); }
+}
+
+
+// ═══════════════════════════════════════════════════════
+//  AUDIT LOG
+// ═══════════════════════════════════════════════════════
+async function renderAuditLog() {
+  const el = $('profileContent'); // reuse content area via page
+  // Fetch audit logs
+  let logs = [];
+  try {
+    logs = await sbFetch('/audit_logs?select=*&order=created_at.desc&limit=100') || [];
+  } catch(e) { }
+
+  const ACTION_LABELS = {
+    delete_user:   '🗑️ حذف مستخدم',
+    delete_ticket: '🗑️ حذف تيكت',
+    update_user:   '✏️ تعديل مستخدم',
+  };
+
+  $('auditlogContent').innerHTML = `
+    <div class="ph-left" style="margin-bottom:20px;">
+      <span class="ph-tag">للمديرين فقط</span>
+      <h1 class="ph-title">سجل العمليات</h1>
+      <p class="ph-sub">تتبع جميع عمليات الحذف والتعديل الحساسة</p>
+    </div>
+    <div class="tbl-wrap">
+      <div class="tbl-head">
+        <span class="tbl-head-title">آخر 100 عملية</span>
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="data-tbl">
+          <thead><tr>
+            <th>التاريخ والوقت</th>
+            <th>المنفذ</th>
+            <th>الدور</th>
+            <th>العملية</th>
+            <th>الهدف</th>
+          </tr></thead>
+          <tbody>
+            ${logs.length ? logs.map(l => `<tr>
+              <td style="font-family:var(--font-mono);font-size:11px;">${_d(l.created_at)} ${_t(l.created_at)}</td>
+              <td><strong>${_e(l.user_name)}</strong></td>
+              <td>${_e(ROLES[l.user_role]||l.user_role)}</td>
+              <td>${_e(ACTION_LABELS[l.action]||l.action)}</td>
+              <td>${_e(l.target_name)}</td>
+            </tr>`).join('') : `<tr><td colspan="5"><div class="empty-state"><p>لا توجد عمليات مسجلة بعد</p></div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 // ═══════════════════════════════════════════════════════
