@@ -723,14 +723,13 @@ async function deleteTicket(id) {
   if (!t) return;
   if (!window.confirm(`هل أنت متأكد من حذف التيكت "${t.title}"؟\nهذا الإجراء لا يمكن التراجع عنه.`)) return;
   try {
-  const t = S.tickets.find(t=>t.id===id);
-      await sbFetch(`/ticket_comments?ticket_id=eq.${id}`,{method:'DELETE'});
-      await sbFetch(`/tickets?id=eq.${id}`,{method:'DELETE'});
-      S.tickets = S.tickets.filter(t=>t.id!==id);
-      toast('تم حذف التيكت');
-      if (S.page==='detail') showPage('alltickets');
-      else renderAllTickets();
-    } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
+    await sbFetch(`/ticket_comments?ticket_id=eq.${id}`,{method:'DELETE'});
+    await sbFetch(`/tickets?id=eq.${id}`,{method:'DELETE'});
+    S.tickets = S.tickets.filter(t=>t.id!==id);
+    toast('تم حذف التيكت');
+    if (S.page==='detail') showPage('alltickets');
+    else renderAllTickets();
+  } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1002,11 +1001,16 @@ function renderReports() {
 
 async function confirmResetStats() {
   if (!window.confirm('هذا الإجراء سيؤدي إلى أرشفة جميع التيكتات المغلقة والمحلولة.\nهل أنت متأكد؟')) return;
-        await sbFetch('/tickets?status=in.(resolved,closed)',{
-        await loadTickets();
-        renderReports();
-        toast('تم إعادة الضبط وأرشفة التيكتات المنتهية');
-      } catch(e){ toast('فشل: '+e.message,'error'); }
+  try {
+    await sbFetch('/tickets?status=in.(resolved,closed)',{
+      method:'PATCH',
+      body:JSON.stringify({ status:'closed', updated_at:new Date().toISOString() }),
+      headers:{'Prefer':'return=minimal'}
+    });
+    await loadTickets();
+    renderReports();
+    toast('تم إعادة الضبط وأرشفة التيكتات المنتهية');
+  } catch(e){ toast('فشل: '+e.message,'error'); }
 }
 
 // ═══════════════════════════════════════════════════════
