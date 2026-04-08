@@ -383,6 +383,29 @@ function renderDashboard() {
   `).join('');
 
   renderDashCharts(tickets);
+
+  // Manager: load active sessions asynchronously (non-blocking)
+  if (S.user.role === 'manager') {
+    fetch(CFG.authEndpoint, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'get_sessions', token:S.token })
+    }).then(r=>r.json()).then(data=>{
+      const el = document.createElement('div');
+      el.className = 'chart-card c12';
+      el.style.cssText = 'border-right:3px solid var(--gold);';
+      el.innerHTML = `
+        <div class="ch-head">
+          <div><div class="ch-title">🟢 الجلسات النشطة</div><div class="ch-sub">المستخدمون المتصلون حالياً</div></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;padding:8px 0;">
+          <div style="font-family:var(--font-display);font-size:52px;font-weight:700;color:var(--gold);">${data.total||0}</div>
+          <div style="font-size:13px;color:var(--text-muted);">جلسة نشطة</div>
+        </div>
+      `;
+      const charts = $('dashCharts');
+      if (charts) charts.appendChild(el);
+    }).catch(()=>{});
+  }
 }
 
 function renderDashCharts(tickets) {
@@ -1100,28 +1123,49 @@ async function confirmResetStats() {
 //  AUDIT LOG
 // ═══════════════════════════════════════════════════════
 async function renderAuditLog() {
-  const el = $('profileContent'); // reuse content area via page
-  // Fetch audit logs
-  let logs = [];
-  try {
-    logs = await sbFetch('/audit_logs?select=*&order=created_at.desc&limit=100') || [];
-  } catch(e) { }
+  // Guard: only manager role can access audit log
+  if (S.user.role !== 'manager') { showPage('dashboard'); return; }
 
   const ACTION_LABELS = {
     delete_user:   '🗑️ حذف مستخدم',
     delete_ticket: '🗑️ حذف تيكت',
     update_user:   '✏️ تعديل مستخدم',
+    reset_audit_log: '🔄 مسح سجل العمليات',
   };
 
+  // Show page with buttons immediately
   $('auditlogContent').innerHTML = `
-    <div class="ph-left" style="margin-bottom:20px;">
-      <span class="ph-tag">للمديرين فقط</span>
-      <h1 class="ph-title">سجل العمليات</h1>
-      <p class="ph-sub">تتبع جميع عمليات الحذف والتعديل الحساسة</p>
+    <div class="ph" style="margin-bottom:20px;">
+      <div class="ph-left">
+        <span class="ph-tag">للمديرين فقط</span>
+        <h1 class="ph-title">سجل العمليات</h1>
+        <p class="ph-sub">تتبع جميع عمليات الحذف والتعديل الحساسة</p>
+      </div>
+      <div class="ph-right">
+        <button class="btn btn-ghost" onclick="exportAuditCSV()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          تصدير CSV
+        </button>
+        <button class="btn btn-danger" onclick="resetAuditLog()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+          مسح السجل
+        </button>
+      </div>
     </div>
+    <div id="auditTableWrap"><div class="empty-state"><p>جارٍ التحميل...</p></div></div>
+  `;
+
+  // Fetch logs
+  let logs = [];
+  try {
+    logs = await sbFetch('/audit_logs?select=*&order=created_at.desc&limit=100') || [];
+  } catch(e) { }
+
+  // Render table
+  document.getElementById('auditTableWrap').innerHTML = `
     <div class="tbl-wrap">
       <div class="tbl-head">
-        <span class="tbl-head-title">آخر 100 عملية</span>
+        <span class="tbl-head-title">آخر 100 عملية (${logs.length})</span>
       </div>
       <div style="overflow-x:auto;">
         <table class="data-tbl">
@@ -1145,7 +1189,45 @@ async function renderAuditLog() {
       </div>
     </div>
   `;
+
+  // Store logs for CSV export
+  S._auditLogs = logs;
+  S._auditLabels = ACTION_LABELS;
 }
+
+// ── Reset Audit Log ──────────────────────────────────────
+async function resetAuditLog() {
+  if (!window.confirm('هل أنت متأكد من مسح كل سجل العمليات؟\nلا يمكن التراجع عن هذا الإجراء.')) return;
+  try {
+    const res = await fetch(CFG.authEndpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'reset_audit_log', token:S.token })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'فشل المسح');
+    toast('تم مسح سجل العمليات بنجاح');
+    renderAuditLog();
+  } catch(e) { toast('فشل: '+e.message, 'error'); }
+}
+
+// ── Export Audit Log CSV ─────────────────────────────────
+function exportAuditCSV() {
+  const logs = S._auditLogs || [];
+  const labels = S._auditLabels || {};
+  if (!logs.length) { toast('لا توجد بيانات للتصدير', 'warning'); return; }
+  const rows = [['التاريخ','المنفذ','الدور','العملية','الهدف']];
+  logs.forEach(l => {
+    rows.push([`${_d(l.created_at)} ${_t(l.created_at)}`, l.user_name, ROLES[l.user_role]||l.user_role, labels[l.action]||l.action, l.target_name]);
+  });
+  const csv = rows.map(r=>r.map(c=>`"${String(c||'').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'}));
+  a.download = `audit-log-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  toast('تم تصدير سجل العمليات');
+}
+
 
 // ═══════════════════════════════════════════════════════
 //  PROFILE
@@ -1190,7 +1272,42 @@ function renderProfile() {
         </div>
       </div>
     </div>
+
+    <!-- Change Password -->
+    <div class="dc" style="margin-top:0;">
+      <div class="dc-title">تغيير كلمة المرور</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;flex-wrap:wrap;">
+        <div>
+          <label class="fl">كلمة المرور الحالية</label>
+          <input type="password" class="fi" id="cp_old" placeholder="••••••••">
+        </div>
+        <div>
+          <label class="fl">الجديدة (6 أحرف كحد أدنى)</label>
+          <input type="password" class="fi" id="cp_new" placeholder="••••••••">
+        </div>
+        <button class="btn btn-gold" onclick="changePassword()">حفظ</button>
+      </div>
+    </div>
   `;
+}
+
+// ── Change Password ──────────────────────────────────────
+async function changePassword() {
+  const oldPass = $('cp_old')?.value || '';
+  const newPass = $('cp_new')?.value || '';
+  if (!oldPass || !newPass) { toast('أدخل كلمة المرور الحالية والجديدة', 'error'); return; }
+  if (newPass.length < 6) { toast('كلمة المرور الجديدة لازم تكون 6 أحرف على الأقل', 'error'); return; }
+  try {
+    const res = await fetch(CFG.authEndpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'change_password', token:S.token, old_password:oldPass, new_password:newPass })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'فشل التغيير');
+    $('cp_old').value = $('cp_new').value = '';
+    toast('✅ تم تغيير كلمة المرور بنجاح');
+  } catch(e) { toast(e.message, 'error'); }
 }
 
 // ═══════════════════════════════════════════════════════
