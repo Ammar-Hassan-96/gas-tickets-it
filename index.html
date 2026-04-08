@@ -1138,7 +1138,9 @@ body {
   </div>
 </div>
 
-<!-- Confirm Dialog -->
+<script src="app.js"></script>
+
+<!-- Confirm Dialog — outside appShell to avoid overflow:hidden clipping -->
 <div class="confirm-mask" id="confirmMask">
   <div class="confirm-box">
     <div class="confirm-icon" id="confirmIcon">⚠️</div>
@@ -1150,7 +1152,5 @@ body {
     </div>
   </div>
 </div>
-
-<script src="app.js"></script>
 </body>
 </html>
