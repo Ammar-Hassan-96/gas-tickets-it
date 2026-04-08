@@ -412,13 +412,18 @@ function renderDashCharts(tickets) {
   // Donut — by category
   const cats={};
   tickets.forEach(t=>{cats[t.category]=(cats[t.category]||0)+1;});
-  const total = tickets.length||1;
+  const total   = tickets.length;
+  const divisor = total || 1; // avoid division by zero
   const colors = ['#B8975A','#60A5FA','#4ADE80','#F87171','#FCD34D','#C084FC','#22D3EE','#FB923C'];
+  // If no tickets, show empty donut
+  if (total === 0) {
+    return `<div class="chart-card c5"><div class="ch-head"><div><div class="ch-title">التوزيع حسب الفئة</div><div class="ch-sub">0 إجمالي</div></div></div><div class="empty-state" style="padding:24px;"><p>لا توجد تيكتات</p></div></div>`;
+  }
   const catList = Object.entries(cats).sort((a,b)=>b[1]-a[1]).slice(0,6);
   const R=38, circ=2*Math.PI*R;
   let off=0;
   const slices = catList.map((c,i)=>{
-    const pct=c[1]/total;
+    const pct=c[1]/divisor;
     const d=pct*circ, g=circ-d, o=off;
     off+=d;
     return {label:CAT_L[c[0]]||c[0],val:c[1],color:colors[i],d,g,o};
@@ -765,16 +770,25 @@ async function submitTicket() {
 
   try {
     const saved = await sbFetch('/tickets',{method:'POST',body:JSON.stringify(ticket)});
-    if (saved?.[0]) {
-      saved[0].comments=[];
-      S.tickets.unshift(saved[0]);
-    } else {
-      ticket.id='local'+Date.now(); ticket.created_at=new Date().toISOString(); ticket.comments=[];
-      S.tickets.unshift(ticket);
-    }
+    // Add to local state immediately for instant UI update (no refresh needed)
+    const newTicket = saved?.[0] ? { ...saved[0], comments: [] } : {
+      ...ticket,
+      id: 'local'+Date.now(),
+      ticket_number: 'GAS-'+new Date().getFullYear()+'-????',
+      created_at: new Date().toISOString(),
+      comments: []
+    };
+    S.tickets.unshift(newTicket);
 
-    // Notify IT
-    const itUsers = S.users.filter(u=>u.role==='admin'||u.role==='manager');
+    // Notify IT admins only (not managers who created the ticket)
+    // Deduplicate: only notify each unique user once
+    const notifiedIds = new Set();
+    const itUsers = S.users.filter(u =>
+      (u.role === 'admin' || u.role === 'manager') &&
+      u.id !== S.user.id &&          // don't notify the creator
+      !notifiedIds.has(u.id) &&
+      notifiedIds.add(u.id)          // mark as notified
+    );
     await Promise.all(itUsers.map(u=>
       sbFetch('/notifications',{method:'POST',body:JSON.stringify({
         user_id:u.id, title:`تيكت جديد: ${title}`,
@@ -783,7 +797,7 @@ async function submitTicket() {
     ));
 
     closeModal('newTicketModal');
-    toast(`تم إرسال التيكت ${num}`);
+    toast(`تم إرسال التيكت ${newTicket.ticket_number || ''}`);
     showPage('mytickets');
   } catch(e){ toast('فشل الإرسال: '+e.message,'error'); }
 }
