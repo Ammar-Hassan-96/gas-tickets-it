@@ -9,7 +9,7 @@
 // ── CONFIG ───────────────────────────────────────────────
 const CFG = {
   supabaseUrl: 'https://rmlkhgktwologfhphtyz.supabase.co',
-  supabaseKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJtbGtoZ2t0d29sb2dmaHBodHl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMzMTUxMTIsImV4cCI6MjA1ODg5MTExMn0.NfR7A3yjYiJGBbzAjxnz0bXqL3JlXQfyLpQLZIibT5c',
+  supabaseKey: 'sb_publishable_ZJvjXbR6yYDoj1BSOnsXVA_CHF19ojv',
   authEndpoint: '/api/auth',
   sessionKey:   'gas_it_session',
   themeKey:     'gas_it_theme',
@@ -140,7 +140,17 @@ document.querySelectorAll('.modal-mask').forEach(m=>{
 // ══════════════════════════════════════════════════════════
 //  AUTH
 // ══════════════════════════════════════════════════════════
+// Brute force protection — client-side throttle
+const _loginTrack = { count: 0, lockedUntil: 0 };
+
 async function doLogin() {
+  // Check lockout
+  if (Date.now() < _loginTrack.lockedUntil) {
+    const secs = Math.ceil((_loginTrack.lockedUntil - Date.now()) / 1000);
+    showLoginError(`محاولات كثيرة — انتظر ${secs} ثانية`);
+    return;
+  }
+
   const username = $('liUser').value.trim();
   const password = $('liPass').value;
   const errEl    = $('loginErr');
@@ -169,6 +179,7 @@ async function doLogin() {
 
     S.user  = data.user;
     S.token = data.token;
+    _loginTrack.count = 0; // reset on success
     localStorage.setItem(CFG.sessionKey, JSON.stringify({ user: data.user, token: data.token }));
 
     // Apply saved theme preference
@@ -177,6 +188,12 @@ async function doLogin() {
     await bootApp();
   } catch(err) {
     showLoginError(err.message || 'خطأ في الاتصال بالخادم');
+    _loginTrack.count++;
+    if (_loginTrack.count >= 5) {
+      _loginTrack.lockedUntil = Date.now() + 60000; // lock 60 seconds
+      _loginTrack.count = 0;
+      showLoginError('تم تجاوز الحد المسموح — انتظر 60 ثانية');
+    }
   } finally {
     btn.disabled    = false;
     btn.textContent = 'تسجيل الدخول';
