@@ -232,6 +232,46 @@ export default async (req) => {
     }
   }
 
+
+  // ── RESET USER PASSWORD (Manager resets any user's password) ──
+  if (action === "reset_user_password") {
+    const { token, user_id, new_password } = body;
+    if (!token || !user_id || !new_password) {
+      return Response.json({ error: "بيانات ناقصة" }, { status: 400 });
+    }
+    if (new_password.length < 6) {
+      return Response.json({ error: "كلمة المرور لازم تكون 6 أحرف على الأقل" }, { status: 400 });
+    }
+    // Validate requester is manager
+    let requester;
+    try { requester = await validateToken(token); }
+    catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
+    if (requester.role !== "manager") {
+      return Response.json({ error: "هذه العملية للمديرين فقط" }, { status: 403 });
+    }
+    // Get target user info
+    let target;
+    try { target = await sb(`/users?id=eq.${user_id}&select=id,name,username`); }
+    catch { return Response.json({ error: "المستخدم غير موجود" }, { status: 404 }); }
+    if (!target?.length) return Response.json({ error: "المستخدم غير موجود" }, { status: 404 });
+    // Hash new password and update
+    const newHash = sha256(new_password);
+    try {
+      await sb(`/users?id=eq.${user_id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ password_hash: newHash }),
+        headers: { Prefer: "return=minimal" }
+      });
+      // Log the action
+      await audit(requester.id, requester.name, requester.role,
+        "reset_password", "user", user_id,
+        `${target[0].name} (${target[0].username})`);
+      return Response.json({ ok: true });
+    } catch (e) {
+      return Response.json({ error: "فشل التعيين: " + e.message }, { status: 500 });
+    }
+  }
+
   return Response.json({ error: "Unknown action" }, { status: 400 });
 };
 
