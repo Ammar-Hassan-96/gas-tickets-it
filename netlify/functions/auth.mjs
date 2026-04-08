@@ -80,8 +80,12 @@ export default async (req) => {
     const user = users[0];
     const token = generateToken();
     const expires = new Date(Date.now() + 10 * 3600 * 1000).toISOString();
-    try { await sb("/sessions", { method: "POST", body: JSON.stringify({ user_id: user.id, token: sha256(token), expires_at: expires }) }); }
-    catch { /* optional */ }
+    try {
+      // Delete old sessions for this user (keep only latest login)
+      await sb(`/sessions?user_id=eq.${user.id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      // Create new session
+      await sb("/sessions", { method: "POST", body: JSON.stringify({ user_id: user.id, token: sha256(token), expires_at: expires }) });
+    } catch { /* optional */ }
     return Response.json({ user, token });
   }
 
@@ -218,14 +222,11 @@ export default async (req) => {
     }
     try {
       const sessions = await sb(
-        `/sessions?expires_at=gt.${new Date().toISOString()}&select=user_id,created_at,expires_at`
+        `/sessions?expires_at=gt.${new Date().toISOString()}&select=user_id,created_at`
       );
-      // Count active sessions per user
-      const counts = {};
-      (sessions || []).forEach(s => {
-        counts[s.user_id] = (counts[s.user_id] || 0) + 1;
-      });
-      return Response.json({ sessions: counts, total: (sessions || []).length });
+      // Count unique users (one session per user after login fix)
+      const uniqueUsers = new Set((sessions || []).map(s => s.user_id));
+      return Response.json({ total: uniqueUsers.size });
     } catch (e) {
       return Response.json({ error: e.message }, { status: 500 });
     }
