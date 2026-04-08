@@ -921,15 +921,13 @@ function deleteUser(id) {
   if (!u) return;
   if (id===S.user.id) { toast('لا يمكنك حذف حسابك الخاص','warning'); return; }
   if (['ammar.admin'].includes(u.username)) { toast('هذا الحساب محمي ولا يمكن حذفه','error'); return; }
-  if (u.username === 'ammar.admin') { toast('لا يمكن حذف هذا الحساب','warning'); return; }
-  confirm('🗑️','حذف المستخدم',`هل أنت متأكد من حذف "${u.name}"؟ سيتم تعطيل حسابه نهائياً.`, async()=>{
+  confirm('🗑️','حذف المستخدم',`هل أنت متأكد من حذف "${u.name}"؟ لا يمكن التراجع عن هذا الإجراء.`, async()=>{
     try {
-      await sbFetch(`/users?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({is_active:false})});
-      const idx = S.users.findIndex(u=>u.id===id);
-      if (idx>-1) S.users[idx].is_active=false;
+      await sbFetch(`/users?id=eq.${id}`,{method:'DELETE'});
+      S.users = S.users.filter(u=>u.id!==id);
       renderUsers();
-      toast('تم تعطيل حساب '+u.name);
-    } catch(e){ toast('فشل: '+e.message,'error'); }
+      toast('تم حذف حساب '+u.name);
+    } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
   });
 }
 
