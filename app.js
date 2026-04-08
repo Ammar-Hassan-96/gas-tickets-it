@@ -117,7 +117,7 @@ function toast(msg, type='success') {
 
 // ── CONFIRM ──────────────────────────────────────────────
 let _confirmCb = null;
-function confirm(icon, title, msg, cb) {
+function showConfirm(icon, title, msg, cb) {
   $('confirmIcon').textContent  = icon;
   $('confirmTitle').textContent = title;
   $('confirmMsg').textContent   = msg;
@@ -721,7 +721,7 @@ async function addComment(ticketId) {
 function deleteTicket(id) {
   const t = S.tickets.find(t=>t.id===id);
   if (!t) return;
-  confirm('🗑️','حذف التيكت',`هل أنت متأكد من حذف التيكت "${t.title}"؟ هذا الإجراء لا يمكن التراجع عنه.`, async()=>{
+  showConfirm('🗑️','حذف التيكت',`هل أنت متأكد من حذف التيكت "${t.title}"؟ هذا الإجراء لا يمكن التراجع عنه.`, async()=>{
     try {
       await sbFetch(`/ticket_comments?ticket_id=eq.${id}`,{method:'DELETE'});
       await sbFetch(`/tickets?id=eq.${id}`,{method:'DELETE'});
@@ -921,7 +921,7 @@ function deleteUser(id) {
   if (!u) return;
   if (id===S.user.id) { toast('لا يمكنك حذف حسابك الخاص','warning'); return; }
   if (['ammar.admin'].includes(u.username)) { toast('هذا الحساب محمي ولا يمكن حذفه','error'); return; }
-  confirm('🗑️','حذف المستخدم',`هل أنت متأكد من حذف "${u.name}"؟ لا يمكن التراجع عن هذا الإجراء.`, async()=>{
+  showConfirm('🗑️','حذف المستخدم',`هل أنت متأكد من حذف "${u.name}"؟ لا يمكن التراجع عن هذا الإجراء.`, async()=>{
     try {
       await sbFetch(`/users?id=eq.${id}`,{method:'DELETE'});
       S.users = S.users.filter(u=>u.id!==id);
@@ -1001,7 +1001,7 @@ function renderReports() {
 }
 
 function confirmResetStats() {
-  confirm('🔄','إعادة ضبط الإحصاءات',
+  showConfirm('🔄','إعادة ضبط الإحصاءات',
     'هذا الإجراء سيؤدي إلى أرشفة جميع التيكتات المغلقة والمحلولة وإعادة العدادات. هل أنت متأكد؟',
     async()=>{
       try {
