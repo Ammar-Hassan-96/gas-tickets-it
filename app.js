@@ -65,7 +65,7 @@ async function sbFetch(path, opts={}) {
     ...opts,
     headers: {
       apikey: CFG.supabaseKey,
-      Authorization: `Bearer ${S.token || CFG.supabaseKey}`,
+      Authorization: `Bearer ${CFG.supabaseKey}`,
       'Content-Type': 'application/json',
       Prefer: 'return=representation',
       ...(opts.headers||{}),
