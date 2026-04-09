@@ -48,7 +48,7 @@ const _ago = iso => {
 const ROLES = { employee:'موظف', admin:'IT Admin', manager:'مدير' };
 const STATUS_L = { open:'مفتوح', assigned:'معين', in_progress:'قيد التنفيذ', resolved:'محلول', closed:'مغلق', escalated:'مصعد' };
 const PRIO_L   = { critical:'حرجة', high:'عالية', medium:'متوسطة', low:'منخفضة' };
-const CAT_L    = { hardware:'أجهزة', software:'برامج', network:'شبكة', email:'بريد', access:'صلاحيات', printer:'printer', security:'أمن', other:'أخرى' };
+const CAT_L    = { hardware:'أجهزة', software:'برامج', network:'شبكة', email:'بريد', access:'صلاحيات', printer:'طابعة', security:'أمن', other:'أخرى' };
 const STATUS_C = { open:'b-open', assigned:'b-assign', in_progress:'b-prog', resolved:'b-resolve', closed:'b-closed', escalated:'b-escal' };
 const PRIO_C   = { critical:'b-crit', high:'b-high', medium:'b-med', low:'b-low' };
 const PRIO_SLA = { critical:4, high:8, medium:24, low:72 };
