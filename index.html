@@ -531,12 +531,12 @@ body {
 
 /* ── NOTIFICATION PANEL ── */
 .notif-panel {
-  position:absolute; top:54px; left:auto; right:0;
-  width:340px; max-width:calc(100vw - 20px); background:var(--bg-surface);
+  position:fixed; top:62px; left:auto; right:16px;
+  width:340px; max-width:calc(100vw - 32px); background:var(--bg-surface);
   border:1px solid var(--border-gold);
   border-radius:var(--radius-xl);
   box-shadow:var(--shadow-modal);
-  display:none; z-index:300; overflow:hidden;
+  display:none; z-index:9000; overflow:hidden;
   animation:dropDown .2s ease;
 }
 .notif-panel.on { display:block; }
