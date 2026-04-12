@@ -216,6 +216,17 @@ export default async (req) => {
     }
   }
 
+  // ── LOGOUT ────────────────────────────────────────────
+  if (action === "logout") {
+    const { token } = body;
+    if (!token) return Response.json({ ok: true });
+    try {
+      const tokenHash = sha256(token);
+      await sb(`/sessions?token=eq.${tokenHash}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+    } catch { /* non-critical */ }
+    return Response.json({ ok: true });
+  }
+
   // ── GET ACTIVE SESSIONS ───────────────────────────────
   if (action === "get_sessions") {
     const { token } = body;
@@ -229,14 +240,28 @@ export default async (req) => {
       const sessions = await sb(
         `/sessions?expires_at=gt.${new Date().toISOString()}&select=user_id,created_at`
       );
-      // Count unique users (one session per user after login fix)
-      const uniqueUsers = new Set((sessions || []).map(s => s.user_id));
-      return Response.json({ total: uniqueUsers.size });
+      // Deduplicate by user_id (one session per user)
+      const seen = new Set();
+      const unique = (sessions || []).filter(s => {
+        if (seen.has(s.user_id)) return false;
+        seen.add(s.user_id); return true;
+      });
+      // Fetch user names for the active sessions
+      const userIds = unique.map(s => s.user_id);
+      let users = [];
+      if (userIds.length > 0) {
+        users = await sb(`/users?id=in.(${userIds.join(',')})&select=id,name,role`) || [];
+      }
+      // Map sessions to user info
+      const activeUsers = unique.map(s => {
+        const u = users.find(u => u.id === s.user_id);
+        return { name: u?.name || '—', role: u?.role || '—', since: s.created_at };
+      });
+      return Response.json({ total: unique.length, users: activeUsers });
     } catch (e) {
       return Response.json({ error: e.message }, { status: 500 });
     }
   }
-
 
   // ── RESET USER PASSWORD (Manager resets any user's password) ──
   if (action === "reset_user_password") {
