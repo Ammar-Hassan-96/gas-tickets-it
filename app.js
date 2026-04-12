@@ -844,10 +844,11 @@ async function submitTicket() {
     });
     await Promise.all(toNotify.map(u=>
       sbFetch('/notifications',{method:'POST',body:JSON.stringify({
-        user_id:u.id, title:`تيكت جديد: ${title}`,
-        body:`من ${S.user.name} — أولوية ${PRIO_L[priority]}`, is_read:false,
-        ticket_id: newTicket.id || null
-      })}).catch(()=>{})
+        user_id:u.id,
+        title:`تيكت جديد: ${title}`,
+        body:`من ${S.user.name} — أولوية ${PRIO_L[priority]}`,
+        is_read:false
+      })}).catch(e=>{ console.warn('Notif failed', u.id, e.message); })
     ));
 
     closeModal('newTicketModal');
@@ -1428,7 +1429,24 @@ function renderNotifPanel() {
 }
 
 function toggleNotifPanel() {
-  $('notifPanel').classList.toggle('on');
+  const panel = $('notifPanel');
+  const btn   = $('notifBtn');
+  const isOpen = panel.classList.contains('on');
+  if (isOpen) { panel.classList.remove('on'); return; }
+
+  // Calculate position from button's screen coordinates
+  const rect = btn.getBoundingClientRect();
+  const panelW = Math.min(340, window.innerWidth - 24);
+  // Place panel below the button, aligned to button's left edge
+  // but clamp so it doesn't go off-screen on either side
+  let left = rect.left;
+  if (left + panelW > window.innerWidth - 12) left = window.innerWidth - panelW - 12;
+  if (left < 12) left = 12;
+
+  panel.style.top  = (rect.bottom + 8) + 'px';
+  panel.style.left = left + 'px';
+  panel.style.width = panelW + 'px';
+  panel.classList.add('on');
 }
 
 async function markNotifRead(id) {
