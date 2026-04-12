@@ -71,6 +71,10 @@ export default async (req) => {
   if (action === "login") {
     const { username, password } = body;
     if (!username || !password) return Response.json({ error: "يرجى إدخال اسم المستخدم وكلمة المرور" }, { status: 400 });
+    // Sanitize: username must be alphanumeric + dots + underscores only
+    if (!/^[a-zA-Z0-9._]{3,50}$/.test(username)) {
+      return Response.json({ error: "اسم المستخدم أو كلمة المرور غير صحيحة" }, { status: 401 });
+    }
     const hash = sha256(password);
     let users;
     try {
@@ -167,11 +171,12 @@ export default async (req) => {
       return Response.json({ error: "هذه العملية للمديرين فقط" }, { status: 403 });
     }
     try {
+      // Log the reset action BEFORE deleting (so it survives reset)
+      await audit(requester.id, requester.name, requester.role, "reset_audit_log", "system", "all", "مسح سجل العمليات الكامل");
       await sb("/audit_logs?id=neq.00000000-0000-0000-0000-000000000000", {
         method: "DELETE",
         headers: { Prefer: "return=minimal" }
       });
-      // Log the reset action itself
       return Response.json({ ok: true });
     } catch (e) {
       return Response.json({ error: "فشل المسح: " + e.message }, { status: 500 });
