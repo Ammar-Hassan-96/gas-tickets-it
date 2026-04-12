@@ -224,6 +224,14 @@ async function tryRestoreSession() {
 }
 
 function doLogout() {
+  // Invalidate session on server (fire-and-forget)
+  if (S.token) {
+    fetch(CFG.authEndpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'logout', token: S.token })
+    }).catch(()=>{});
+  }
   S.user = S.token = null;
   S.tickets = S.users = S.notifs = [];
   localStorage.removeItem(CFG.sessionKey);
@@ -388,16 +396,32 @@ function renderDashboard() {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ action:'get_sessions', token:S.token })
     }).then(r=>r.json()).then(data=>{
+      const total = data.total || 0;
+      const users = data.users || [];
+      const ROLE_AR = { employee:'موظف', admin:'IT Admin', manager:'مدير' };
+
+      const usersHtml = users.length
+        ? users.map(u=>`
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:0.5px solid var(--border);last-child:border-none;">
+              <div style="width:8px;height:8px;border-radius:50%;background:#4ADE80;flex-shrink:0;"></div>
+              <span style="font-size:13px;font-weight:500;color:var(--text-primary);flex:1;">${_e(u.name)}</span>
+              <span style="font-size:11px;color:var(--text-muted);">${_e(ROLE_AR[u.role]||u.role)}</span>
+            </div>`).join('')
+        : `<div style="padding:12px;font-size:13px;color:var(--text-muted);text-align:center;">لا يوجد مستخدمون متصلون</div>`;
+
       const el = document.createElement('div');
       el.className = 'chart-card c12';
       el.style.cssText = 'border-right:3px solid var(--gold);';
       el.innerHTML = `
         <div class="ch-head">
-          <div><div class="ch-title">🟢 الجلسات النشطة</div><div class="ch-sub">المستخدمون المتصلون حالياً</div></div>
+          <div>
+            <div class="ch-title">🟢 الجلسات النشطة</div>
+            <div class="ch-sub">المستخدمون المتصلون حالياً</div>
+          </div>
+          <div style="font-family:var(--font-display);font-size:36px;font-weight:700;color:var(--gold);">${total}</div>
         </div>
-        <div style="display:flex;align-items:center;gap:16px;padding:8px 0;">
-          <div style="font-family:var(--font-display);font-size:52px;font-weight:700;color:var(--gold);">${data.total||0}</div>
-          <div style="font-size:13px;color:var(--text-muted);">جلسة نشطة</div>
+        <div style="border:0.5px solid var(--border);border-radius:var(--radius-md);overflow:hidden;margin-top:4px;">
+          ${usersHtml}
         </div>
       `;
       const charts = $('dashCharts');
