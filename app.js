@@ -125,8 +125,9 @@ function showConfirm(icon, title, msg, cb) {
   $('confirmMask').classList.add('on');
 }
 function confirmOk() {
+  const cb = _confirmCb;
   closeConfirm();
-  if (_confirmCb) _confirmCb();
+  if (cb) cb();
 }
 function closeConfirm() { $('confirmMask').classList.remove('on'); _confirmCb=null; }
 
@@ -224,6 +225,8 @@ async function tryRestoreSession() {
 }
 
 function doLogout() {
+  // Stop heartbeat
+  if (S._heartbeat) { clearInterval(S._heartbeat); S._heartbeat = null; }
   // Invalidate session on server (fire-and-forget)
   if (S.token) {
     fetch(CFG.authEndpoint, {
@@ -252,6 +255,17 @@ async function bootApp() {
   buildTopbar();
   buildNav();
   showPage('dashboard');
+
+  // Heartbeat — ping server every 3 minutes to mark session as active
+  if (S._heartbeat) clearInterval(S._heartbeat);
+  S._heartbeat = setInterval(() => {
+    if (!S.token) return;
+    fetch(CFG.authEndpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'ping', token: S.token })
+    }).catch(()=>{});
+  }, 3 * 60 * 1000);
 }
 
 async function loadTickets() {
