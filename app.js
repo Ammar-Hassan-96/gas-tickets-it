@@ -26,9 +26,9 @@ const S = {
   prevPage:  null,
   selTicket: null,
   editUserId: null,
-  filterStatus:   '',
-  filterPriority: '',
-  filterSearch:   '',
+  // Separate filter state per page to avoid cross-contamination
+  myFilter:  { status: '', search: '' },
+  allFilter: { status: '', priority: '', search: '' },
 };
 
 // ── HELPERS ──────────────────────────────────────────────
@@ -505,24 +505,28 @@ function renderDashCharts(tickets) {
 //  MY TICKETS
 // ═══════════════════════════════════════════════════════
 function renderMyTickets() {
+  // Reset filters when page loads fresh
+  S.myFilter = { status: '', search: '' };
+  const inputs = document.querySelectorAll('#page-mytickets .s-input, #page-mytickets .s-select');
+  inputs.forEach(el => { el.value = ''; });
   const base = S.tickets.filter(t=>t.created_by===S.user.id);
   renderTicketRows('myTbody', applyMyFilter(base), false);
 }
 
 function filterMyTickets(q) {
+  S.myFilter.search = q;
   const base = S.tickets.filter(t=>t.created_by===S.user.id);
-  S.filterSearch = q;
   renderTicketRows('myTbody', applyMyFilter(base), false);
 }
 function filterMyByStatus(v) {
+  S.myFilter.status = v;
   const base = S.tickets.filter(t=>t.created_by===S.user.id);
-  S.filterStatus = v;
   renderTicketRows('myTbody', applyMyFilter(base), false);
 }
 function applyMyFilter(list) {
   let r = list;
-  if (S.filterStatus)  r = r.filter(t=>t.status===S.filterStatus);
-  if (S.filterSearch)  r = r.filter(t=>t.title.includes(S.filterSearch)||t.ticket_number.includes(S.filterSearch));
+  if (S.myFilter.status) r = r.filter(t=>t.status===S.myFilter.status);
+  if (S.myFilter.search) r = r.filter(t=>t.title.includes(S.myFilter.search)||t.ticket_number.includes(S.myFilter.search));
   return r;
 }
 
@@ -530,22 +534,26 @@ function applyMyFilter(list) {
 //  ALL TICKETS
 // ═══════════════════════════════════════════════════════
 function renderAllTickets() {
+  // Reset filters when page loads fresh
+  S.allFilter = { status: '', priority: '', search: '' };
+  const inputs = document.querySelectorAll('#page-alltickets .s-input, #page-alltickets .s-select');
+  inputs.forEach(el => { el.value = ''; });
   renderTicketRows('allTbody', applyAllFilter(S.tickets), true);
 }
 function filterAllTickets(q) {
-  S.filterSearch = q;
+  S.allFilter.search = q;
   renderTicketRows('allTbody', applyAllFilter(S.tickets), true);
 }
 function filterAll(key, val) {
-  if (key==='status')   S.filterStatus   = val;
-  if (key==='priority') S.filterPriority = val;
+  if (key==='status')   S.allFilter.status   = val;
+  if (key==='priority') S.allFilter.priority = val;
   renderTicketRows('allTbody', applyAllFilter(S.tickets), true);
 }
 function applyAllFilter(list) {
   let r = list;
-  if (S.filterStatus)   r = r.filter(t=>t.status===S.filterStatus);
-  if (S.filterPriority) r = r.filter(t=>t.priority===S.filterPriority);
-  if (S.filterSearch)   r = r.filter(t=>t.title.includes(S.filterSearch)||t.ticket_number.includes(S.filterSearch)||uname(t.created_by).includes(S.filterSearch));
+  if (S.allFilter.status)   r = r.filter(t=>t.status===S.allFilter.status);
+  if (S.allFilter.priority) r = r.filter(t=>t.priority===S.allFilter.priority);
+  if (S.allFilter.search)   r = r.filter(t=>t.title.includes(S.allFilter.search)||t.ticket_number.includes(S.allFilter.search)||uname(t.created_by).includes(S.allFilter.search));
   return r;
 }
 
@@ -623,7 +631,9 @@ async function openTicketDetail(id) {
 
   const canUpdate = S.user.role !== 'employee';
   const canDelete = S.user.role === 'manager';
+  const canAssign = S.user.role !== 'employee' && t.assigned_to !== S.user.id && !['resolved','closed'].includes(t.status);
   $('detailBtns').innerHTML = `
+    ${canAssign?`<button class="btn btn-ghost" onclick="assignToMe('${id}')" style="border-color:var(--gold);color:var(--gold);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>تعيين لي</button>`:''}
     ${canUpdate?`<button class="btn btn-ghost" onclick="quickUpdate('${id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>تحديث الحالة</button>`:''}
     ${canDelete?`<button class="btn btn-danger" onclick="deleteTicket('${id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>حذف التيكت</button>`:''}
   `;
@@ -687,6 +697,22 @@ async function openTicketDetail(id) {
   `;
 
   showPage('detail');
+}
+
+// ── Assign to Me ─────────────────────────────────────────
+async function assignToMe(ticketId) {
+  const t = S.tickets.find(t=>t.id===ticketId);
+  if (!t) return;
+  try {
+    await sbFetch(`/tickets?id=eq.${t.id}`, {
+      method:'PATCH',
+      body: JSON.stringify({ assigned_to: S.user.id, status: t.status==='open' ? 'assigned' : t.status, updated_at: new Date().toISOString() })
+    });
+    t.assigned_to = S.user.id;
+    if (t.status==='open') t.status = 'assigned';
+    toast('✅ تم تعيين التيكت لك');
+    openTicketDetail(ticketId);
+  } catch(e) { toast('فشل التعيين: '+e.message, 'error'); }
 }
 
 // ── Quick Update ─────────────────────────────────────────
@@ -757,20 +783,21 @@ async function addComment(ticketId) {
 async function deleteTicket(id) {
   const t = S.tickets.find(t=>t.id===id);
   if (!t) return;
-  if (!window.confirm(`هل أنت متأكد من حذف التيكت "${t.title}"؟\nهذا الإجراء لا يمكن التراجع عنه.`)) return;
-  try {
-    const res = await fetch(CFG.authEndpoint, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'delete_ticket', token:S.token, ticket_id:id })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'فشل الحذف');
-    S.tickets = S.tickets.filter(t=>t.id!==id);
-    toast('تم حذف التيكت');
-    if (S.page==='detail') showPage('alltickets');
-    else renderAllTickets();
-  } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
+  showConfirm('🗑️', 'حذف التيكت', `هل أنت متأكد من حذف التيكت "${t.title}"؟\nهذا الإجراء لا يمكن التراجع عنه.`, async ()=>{
+    try {
+      const res = await fetch(CFG.authEndpoint, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ action:'delete_ticket', token:S.token, ticket_id:id })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'فشل الحذف');
+      S.tickets = S.tickets.filter(t=>t.id!==id);
+      toast('تم حذف التيكت');
+      if (S.page==='detail') showPage('alltickets');
+      else renderAllTickets();
+    } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
+  });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -970,37 +997,68 @@ async function deleteUser(id) {
   if (!u) return;
   if (id===S.user.id) { toast('لا يمكنك حذف حسابك الخاص','warning'); return; }
   if (['ammar.admin'].includes(u.username)) { toast('هذا الحساب محمي ولا يمكن حذفه','error'); return; }
-  if (!window.confirm(`هل أنت متأكد من حذف "${u.name}"؟\nلا يمكن التراجع عن هذا الإجراء.`)) return;
-  try {
-    const res = await fetch(CFG.authEndpoint, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'delete_user', token:S.token, user_id:id })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'فشل الحذف');
-    S.users = S.users.filter(u=>u.id!==id);
-    renderUsers();
-    toast('تم حذف حساب '+u.name);
-  } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
+  showConfirm('⚠️', 'حذف مستخدم', `هل أنت متأكد من حذف "${u.name}"؟\nلا يمكن التراجع عن هذا الإجراء.`, async ()=>{
+    try {
+      const res = await fetch(CFG.authEndpoint, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ action:'delete_user', token:S.token, user_id:id })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'فشل الحذف');
+      S.users = S.users.filter(u=>u.id!==id);
+      renderUsers();
+      toast('تم حذف حساب '+u.name);
+    } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
+  });
 }
 
 // ── Reset User Password (Manager only) ─────────────────
-async function resetUserPassword(userId, userName) {
-  const newPass = window.prompt(`إعادة تعيين كلمة مرور "${userName}"\nأدخل كلمة المرور الجديدة (6 أحرف على الأقل):`);
-  if (!newPass) return; // cancelled
-  if (newPass.length < 6) { toast('كلمة المرور لازم تكون 6 أحرف على الأقل', 'error'); return; }
+function resetUserPassword(userId, userName) {
+  S._resetPwdTarget = { userId, userName };
+  const el = document.getElementById('resetPwdModal');
+  if (!el) {
+    // Build modal once and cache it
+    const m = document.createElement('div');
+    m.className = 'modal-mask';
+    m.id = 'resetPwdModal';
+    m.innerHTML = `
+      <div class="modal-box sm">
+        <div class="modal-hd">
+          <span class="modal-title" id="resetPwdTitle">تعيين كلمة مرور</span>
+          <button class="modal-x" onclick="closeModal('resetPwdModal')">×</button>
+        </div>
+        <div class="modal-bd">
+          <div class="fg">
+            <label class="fl">كلمة المرور الجديدة (6 أحرف على الأقل)</label>
+            <input type="password" class="fi" id="resetPwdInput" placeholder="••••••••">
+          </div>
+        </div>
+        <div class="modal-ft">
+          <button class="btn btn-gold" onclick="doResetUserPassword()">تعيين</button>
+          <button class="btn btn-ghost" onclick="closeModal('resetPwdModal')">إلغاء</button>
+        </div>
+      </div>`;
+    m.addEventListener('click', e => { if(e.target===m) m.classList.remove('on'); });
+    document.body.appendChild(m);
+  }
+  document.getElementById('resetPwdTitle').textContent = `تعيين كلمة مرور: ${userName}`;
+  document.getElementById('resetPwdInput').value = '';
+  openModal('resetPwdModal');
+}
 
+async function doResetUserPassword() {
+  const { userId, userName } = S._resetPwdTarget || {};
+  if (!userId) return;
+  const newPass = document.getElementById('resetPwdInput').value;
+  if (!newPass) return;
+  if (newPass.length < 6) { toast('كلمة المرور لازم تكون 6 أحرف على الأقل', 'error'); return; }
+  closeModal('resetPwdModal');
   try {
     const res = await fetch(CFG.authEndpoint, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        action: 'reset_user_password',
-        token: S.token,
-        user_id: userId,
-        new_password: newPass
-      })
+      body: JSON.stringify({ action: 'reset_user_password', token: S.token, user_id: userId, new_password: newPass })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'فشل التعيين');
@@ -1129,17 +1187,18 @@ function renderReports() {
 }
 
 async function confirmResetStats() {
-  if (!window.confirm('هذا الإجراء سيؤدي إلى أرشفة جميع التيكتات المغلقة والمحلولة.\nهل أنت متأكد؟')) return;
-  try {
-    await sbFetch('/tickets?status=in.(resolved,closed)',{
-      method:'PATCH',
-      body:JSON.stringify({ status:'closed', updated_at:new Date().toISOString() }),
-      headers:{'Prefer':'return=minimal'}
-    });
-    await loadTickets();
-    renderReports();
-    toast('تم إعادة الضبط وأرشفة التيكتات المنتهية');
-  } catch(e){ toast('فشل: '+e.message,'error'); }
+  showConfirm('🔄', 'إعادة ضبط الإحصاءات', 'سيؤدي هذا إلى أرشفة جميع التيكتات المغلقة والمحلولة.\nهل أنت متأكد؟', async ()=>{
+    try {
+      await sbFetch('/tickets?status=in.(resolved,closed)',{
+        method:'PATCH',
+        body:JSON.stringify({ status:'closed', updated_at:new Date().toISOString() }),
+        headers:{'Prefer':'return=minimal'}
+      });
+      await loadTickets();
+      renderReports();
+      toast('تم إعادة الضبط وأرشفة التيكتات المنتهية');
+    } catch(e){ toast('فشل: '+e.message,'error'); }
+  });
 }
 
 
@@ -1221,18 +1280,19 @@ async function renderAuditLog() {
 
 // ── Reset Audit Log ──────────────────────────────────────
 async function resetAuditLog() {
-  if (!window.confirm('هل أنت متأكد من مسح كل سجل العمليات؟\nلا يمكن التراجع عن هذا الإجراء.')) return;
-  try {
-    const res = await fetch(CFG.authEndpoint, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'reset_audit_log', token:S.token })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'فشل المسح');
-    toast('تم مسح سجل العمليات بنجاح');
-    renderAuditLog();
-  } catch(e) { toast('فشل: '+e.message, 'error'); }
+  showConfirm('⚠️', 'مسح سجل العمليات', 'هل أنت متأكد من مسح كل سجل العمليات؟\nلا يمكن التراجع عن هذا الإجراء.', async ()=>{
+    try {
+      const res = await fetch(CFG.authEndpoint, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ action:'reset_audit_log', token:S.token })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'فشل المسح');
+      toast('تم مسح سجل العمليات بنجاح');
+      renderAuditLog();
+    } catch(e) { toast('فشل: '+e.message, 'error'); }
+  });
 }
 
 // ── Export Audit Log CSV ─────────────────────────────────
@@ -1300,7 +1360,7 @@ function renderProfile() {
     <!-- Change Password -->
     <div class="dc" style="margin-top:0;">
       <div class="dc-title">تغيير كلمة المرور</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;flex-wrap:wrap;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:end;">
         <div>
           <label class="fl">كلمة المرور الحالية</label>
           <input type="password" class="fi" id="cp_old" placeholder="••••••••">
@@ -1309,7 +1369,9 @@ function renderProfile() {
           <label class="fl">الجديدة (6 أحرف كحد أدنى)</label>
           <input type="password" class="fi" id="cp_new" placeholder="••••••••">
         </div>
-        <button class="btn btn-gold" onclick="changePassword()">حفظ</button>
+      </div>
+      <div style="margin-top:12px;">
+        <button class="btn btn-gold" onclick="changePassword()">حفظ كلمة المرور</button>
       </div>
     </div>
   `;

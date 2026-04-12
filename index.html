@@ -531,8 +531,8 @@ body {
 
 /* ── NOTIFICATION PANEL ── */
 .notif-panel {
-  position:absolute; top:54px; left:0;
-  width:340px; background:var(--bg-surface);
+  position:absolute; top:54px; left:auto; right:0;
+  width:340px; max-width:calc(100vw - 20px); background:var(--bg-surface);
   border:1px solid var(--border-gold);
   border-radius:var(--radius-xl);
   box-shadow:var(--shadow-modal);
@@ -721,15 +721,22 @@ body {
 /* ── RESPONSIVE ── */
 @media(max-width:768px){
   .content { padding:14px; }
-  .topbar  { padding:0 14px; }
+  .topbar  { padding:0 10px; gap:8px; }
   .tb-sub, .tb-names .tb-sub { display:none; }
+  .tb-name { font-size:13px; }
   .stats-row { grid-template-columns:1fr 1fr; }
   .fg-2 { grid-template-columns:1fr; }
+  .tb-nav-btn { padding:6px 9px; font-size:12px; }
+  .u-info { display:none; }
+  .tb-sep { display:none; }
+}
+@media(max-width:480px){
+  .tb-names { display:none; }
+  .tb-nav-btn { padding:6px 8px; font-size:11px; gap:4px; }
 }
 </style>
 </head>
 <body>
-
 <!-- ═══════════════════════ LOADING ═══════════════════════ -->
 <div id="loadingScreen">
   <div class="load-star">
