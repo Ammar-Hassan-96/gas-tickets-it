@@ -835,16 +835,16 @@ async function submitTicket() {
     };
     S.tickets.unshift(newTicket);
 
-    // Notify IT admins only (not managers who created the ticket)
-    // Deduplicate: only notify each unique user once
-    const notifiedIds = new Set();
-    const itUsers = S.users.filter(u =>
-      (u.role === 'admin' || u.role === 'manager') &&
-      u.id !== S.user.id &&          // don't notify the creator
-      !notifiedIds.has(u.id) &&
-      notifiedIds.add(u.id)          // mark as notified
-    );
-    await Promise.all(itUsers.map(u=>
+    // Notify IT admins and managers (excluding the creator) — strictly one notification per user
+    const seenIds = new Set();
+    const toNotify = S.users.filter(u => {
+      if (u.role !== 'admin' && u.role !== 'manager') return false;
+      if (u.id === S.user.id) return false;  // don't notify the creator
+      if (seenIds.has(u.id)) return false;   // deduplicate by id
+      seenIds.add(u.id);
+      return true;
+    });
+    await Promise.all(toNotify.map(u=>
       sbFetch('/notifications',{method:'POST',body:JSON.stringify({
         user_id:u.id, title:`تيكت جديد: ${title}`,
         body:`من ${S.user.name} — أولوية ${PRIO_L[priority]}`, is_read:false
@@ -984,7 +984,12 @@ async function saveUser() {
     const payload = { name, username:uname, email:email||null, password_hash:hashHex, role, department:dept, phone:phone||null, is_active:true };
     try {
       const saved = await sbFetch('/users',{method:'POST',body:JSON.stringify(payload)});
-      if (saved?.[0]) S.users.push(saved[0]);
+      if (saved?.[0]) {
+        // Replace if somehow already in state, otherwise push
+        const existIdx = S.users.findIndex(u=>u.id===saved[0].id);
+        if (existIdx > -1) S.users[existIdx] = saved[0];
+        else S.users.push(saved[0]);
+      }
       closeModal('newUserModal');
       renderUsers();
       toast(`تم إضافة ${name}`);
