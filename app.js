@@ -263,10 +263,8 @@ async function loadUsers() {
 async function loadNotifications() {
   if (!S.user) return;
   try {
-    const q = S.user.role === 'employee'
-      ? `/notifications?user_id=eq.${S.user.id}&order=created_at.desc&limit=20`
-      : `/notifications?order=created_at.desc&limit=30`;
-    S.notifs = await sbFetch(q) || [];
+    // Always filter by user_id — every role sees only their own notifications
+    S.notifs = await sbFetch(`/notifications?user_id=eq.${S.user.id}&order=created_at.desc&limit=30`) || [];
   } catch { S.notifs = []; }
   renderNotifPanel();
 }
@@ -847,7 +845,8 @@ async function submitTicket() {
     await Promise.all(toNotify.map(u=>
       sbFetch('/notifications',{method:'POST',body:JSON.stringify({
         user_id:u.id, title:`تيكت جديد: ${title}`,
-        body:`من ${S.user.name} — أولوية ${PRIO_L[priority]}`, is_read:false
+        body:`من ${S.user.name} — أولوية ${PRIO_L[priority]}`, is_read:false,
+        ticket_id: newTicket.id || null
       })}).catch(()=>{})
     ));
 
@@ -1405,13 +1404,22 @@ async function changePassword() {
 //  NOTIFICATIONS
 // ═══════════════════════════════════════════════════════
 function renderNotifPanel() {
-  const unread = S.notifs.filter(n=>!n.is_read);
+  // Deduplicate: if same title sent within 60s, show only first occurrence
+  const seen = new Map();
+  const deduped = S.notifs.filter(n => {
+    const t = new Date(n.created_at).getTime();
+    if (seen.has(n.title) && Math.abs(t - seen.get(n.title)) < 60000) return false;
+    seen.set(n.title, t);
+    return true;
+  });
+
+  const unread = deduped.filter(n=>!n.is_read);
   const badge  = $('notifBadge');
   if (unread.length>0) { badge.textContent=unread.length; badge.style.display='flex'; }
   else badge.style.display='none';
 
-  $('notifList').innerHTML = S.notifs.length
-    ? S.notifs.map(n=>`
+  $('notifList').innerHTML = deduped.length
+    ? deduped.map(n=>`
         <div class="notif-item ${!n.is_read?'unread':''}" onclick="markNotifRead('${n.id}')">
           <div class="ni-title">${_e(n.title)}</div>
           <div class="ni-sub">${_e(n.body||'')} · ${_ago(n.created_at)}</div>
