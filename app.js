@@ -717,8 +717,32 @@ async function assignToMe(ticketId) {
 function quickUpdate(ticketId) {
   S.selTicket = ticketId;
   const t = S.tickets.find(t=>t.id===ticketId);
-  if (t) $('upd_status').value = t.status;
-  $('upd_note').value = '';
+  if (!t) return;
+
+  $('upd_status').value = t.status;
+  $('upd_note').value   = '';
+
+  // Build assign-to dropdown — visible to manager only
+  const assignWrap = $('upd_assign_wrap');
+  const assignSel  = $('upd_assigned_to');
+  const isManager  = S.user.role === 'manager';
+
+  if (isManager) {
+    assignWrap.style.display = '';
+    // Populate with IT admins
+    const itStaff = S.users.filter(u => u.role === 'admin' || u.role === 'manager');
+    assignSel.innerHTML = `<option value="">— بدون تعيين —</option>` +
+      itStaff.map(u =>
+        `<option value="${u.id}" ${t.assigned_to===u.id?'selected':''}>${_e(u.name)} — ${_e(u.department||ROLES[u.role])}</option>`
+      ).join('');
+    // Pre-select current assigned
+    assignSel.value = t.assigned_to || '';
+  } else {
+    // Admin: hide assign field, auto-assign to self on save
+    assignWrap.style.display = 'none';
+    assignSel.value = S.user.id;
+  }
+
   openModal('updateTicketModal');
 }
 
@@ -726,20 +750,26 @@ async function saveTicketUpdate() {
   const t = S.tickets.find(t=>t.id===S.selTicket);
   if (!t) return;
 
-  const newStatus = $('upd_status').value;
-  const note      = $('upd_note').value.trim();
+  const newStatus     = $('upd_status').value;
+  const note          = $('upd_note').value.trim();
+  const assignedToVal = $('upd_assigned_to').value;
+  // Manager: use selected value (can be empty = unassign)
+  // Admin: keep existing or assign to self
+  const newAssigned = S.user.role === 'manager'
+    ? (assignedToVal || null)
+    : (t.assigned_to || S.user.id);
 
   try {
     await sbFetch(`/tickets?id=eq.${t.id}`, {
       method:'PATCH',
-      body: JSON.stringify({ status:newStatus, assigned_to: t.assigned_to||S.user.id, updated_at:new Date().toISOString() })
+      body: JSON.stringify({ status:newStatus, assigned_to:newAssigned, updated_at:new Date().toISOString() })
     });
 
     if (note) {
       const comment = {
-        ticket_id: t.id,
-        user_id:   S.user.id,
-        content:   note,
+        ticket_id:   t.id,
+        user_id:     S.user.id,
+        content:     note,
         author_name: S.user.name,
       };
       const saved = await sbFetch('/ticket_comments', { method:'POST', body:JSON.stringify(comment) });
@@ -747,11 +777,16 @@ async function saveTicketUpdate() {
       if (saved?.[0]) t.comments.push(saved[0]);
     }
 
-    t.status = newStatus;
-    if (!t.assigned_to) t.assigned_to = S.user.id;
+    const prevAssigned = t.assigned_to;
+    t.status      = newStatus;
+    t.assigned_to = newAssigned;
+
+    const msg = (S.user.role === 'manager' && newAssigned !== prevAssigned && newAssigned)
+      ? `تم التحديث · معين لـ ${uname(newAssigned)}`
+      : 'تم تحديث التيكت';
 
     closeModal('updateTicketModal');
-    toast('تم تحديث التيكت');
+    toast(msg);
     if (S.page==='detail') openTicketDetail(t.id);
     else renderAllTickets();
   } catch(e) {
