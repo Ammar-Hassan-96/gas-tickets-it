@@ -46,10 +46,10 @@ const _ago = iso => {
 };
 
 const ROLES = { employee:'موظف', admin:'IT Admin', manager:'مدير' };
-const STATUS_L = { open:'مفتوح', assigned:'معين', in_progress:'قيد التنفيذ', resolved:'محلول', closed:'مغلق', escalated:'مصعد' };
+const STATUS_L = { open:'مفتوح', assigned:'معين', in_progress:'قيد التنفيذ', resolved:'محلول', closed:'مغلق', escalated:'مصعد', archived:'مؤرشف' };
 const PRIO_L   = { critical:'حرجة', high:'عالية', medium:'متوسطة', low:'منخفضة' };
 const CAT_L    = { hardware:'أجهزة', software:'برامج', network:'شبكة', email:'بريد', access:'صلاحيات', printer:'طابعة', security:'أمن', other:'أخرى' };
-const STATUS_C = { open:'b-open', assigned:'b-assign', in_progress:'b-prog', resolved:'b-resolve', closed:'b-closed', escalated:'b-escal' };
+const STATUS_C = { open:'b-open', assigned:'b-assign', in_progress:'b-prog', resolved:'b-resolve', closed:'b-closed', escalated:'b-escal', archived:'b-inactive' };
 const PRIO_C   = { critical:'b-crit', high:'b-high', medium:'b-med', low:'b-low' };
 const PRIO_SLA = { critical:4, high:8, medium:24, low:72 };
 
@@ -106,13 +106,33 @@ function toggleTheme() {
 
 // ── TOAST ────────────────────────────────────────────────
 function toast(msg, type='success') {
-  const icons = { success:'✅', error:'❌', warning:'⚠️', info:'ℹ️' };
+  const icons  = { success:'✅', error:'❌', warning:'⚠️', info:'ℹ️' };
+  const colors = {
+    success: 'var(--success)',
+    error:   'var(--danger)',
+    warning: 'var(--warning)',
+    info:    'var(--info)'
+  };
+  // أزل أي toast موجود من نفس النوع
+  document.querySelectorAll('.toast').forEach(t=>{ if(t.dataset.type===type) t.remove(); });
+
   const el = document.createElement('div');
   el.className = 'toast';
+  el.dataset.type = type;
+  el.style.borderRight = `3px solid ${colors[type]||colors.info}`;
   el.innerHTML = `<span class="toast-ico">${icons[type]||'ℹ️'}</span><span class="toast-txt">${_e(msg)}</span>`;
   el.onclick = ()=>el.remove();
   document.body.appendChild(el);
-  setTimeout(()=>el.remove(), 4000);
+
+  // fade out قبل الإزالة
+  const removeTimer = setTimeout(()=>{
+    el.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(8px)';
+    setTimeout(()=>el.remove(), 400);
+  }, 3600);
+
+  el.onclick = ()=>{ clearTimeout(removeTimer); el.remove(); };
 }
 
 // ── CONFIRM ──────────────────────────────────────────────
@@ -255,6 +275,7 @@ async function bootApp() {
 
   buildTopbar();
   buildNav();
+  refreshNavCounts();
   showPage('dashboard');
 
   // Heartbeat — ping server every 3 minutes to mark session as active
@@ -350,16 +371,44 @@ function buildNav() {
       ['alltickets', '🎫', 'التيكتات'],
       ['users',      '👥', 'المستخدمون'],
       ['reports',    '📊', 'التقارير'],
+      ['archive',    '📦', 'الأرشيف'],
       ['auditlog',   '🛡️', 'سجل العمليات'],
       ['profile',    '👤', 'حسابي'],
     ],
   };
   const items = defs[role] || defs.employee;
-  $('mainNav').innerHTML = items.map(([id,,label]) => `
-    <button class="tb-nav-btn" id="nav-${id}" onclick="showPage('${id}')">
-      ${_e(label)}
-    </button>
-  `).join('');
+  $('mainNav').innerHTML = items.map(([id,,label]) => {
+    const count = getNavCount(id);
+    const badge = count > 0
+      ? `<span style="background:var(--danger);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;margin-right:4px;">${count}</span>`
+      : '';
+    return `<button class="tb-nav-btn" id="nav-${id}" onclick="showPage('${id}')">${_e(label)}${badge}</button>`;
+  }).join('');
+}
+
+function getNavCount(pageId) {
+  if (!S.tickets?.length) return 0;
+  const active = S.tickets.filter(t=>t.status!=='archived');
+  if (pageId === 'mytickets')  return active.filter(t=>t.created_by===S.user.id&&['open','assigned','in_progress'].includes(t.status)).length;
+  if (pageId === 'alltickets') return active.filter(t=>['open','assigned'].includes(t.status)).length;
+  if (pageId === 'archive')    return S.tickets.filter(t=>t.status==='archived').length;
+  return 0;
+}
+
+function refreshNavCounts() {
+  ['mytickets','alltickets','archive'].forEach(id=>{
+    const btn = $(`nav-${id}`);
+    if (!btn) return;
+    const count = getNavCount(id);
+    const old = btn.querySelector('span');
+    if (old) old.remove();
+    if (count > 0) {
+      const badge = document.createElement('span');
+      badge.style.cssText = 'background:var(--danger);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;margin-right:4px;';
+      badge.textContent = count;
+      btn.appendChild(badge);
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -384,6 +433,7 @@ function showPage(id) {
     users:    renderUsers,
     reports:  renderReports,
     auditlog: renderAuditLog,
+    archive:  renderArchive,
     profile:  renderProfile,
   };
   if (renders[id]) renders[id]();
@@ -604,17 +654,18 @@ function renderAllTickets() {
   S.allFilter = { status: '', priority: '', search: '', date: '' };
   const inputs = document.querySelectorAll('#page-alltickets .s-input, #page-alltickets .s-select');
   inputs.forEach(el => { el.value = ''; });
-  renderTicketRows('allTbody', applyAllFilter(S.tickets), true);
+  // استثناء المؤرشفة من العرض العادي
+  renderTicketRows('allTbody', applyAllFilter(S.tickets.filter(t=>t.status!=='archived')), true);
 }
 function filterAllTickets(q) {
   S.allFilter.search = q;
-  renderTicketRows('allTbody', applyAllFilter(S.tickets), true);
+  renderTicketRows('allTbody', applyAllFilter(S.tickets.filter(t=>t.status!=='archived')), true);
 }
 function filterAll(key, val) {
   if (key==='status')   S.allFilter.status   = val;
   if (key==='priority') S.allFilter.priority = val;
   if (key==='date')     S.allFilter.date     = val;
-  renderTicketRows('allTbody', applyAllFilter(S.tickets), true);
+  renderTicketRows('allTbody', applyAllFilter(S.tickets.filter(t=>t.status!=='archived')), true);
 }
 function applyAllFilter(list) {
   let r = list;
@@ -661,7 +712,7 @@ function renderTicketRows(tbodyId, tickets, isAdmin) {
         <td>
           <div style="display:flex;gap:5px;">
             <button class="btn btn-ghost" style="padding:4px 9px;font-size:11px;" onclick="event.stopPropagation();quickUpdate('${t.id}')">تحديث</button>
-            ${canDel?`<button class="btn btn-danger" style="padding:4px 9px;font-size:11px;" onclick="event.stopPropagation();deleteTicket('${t.id}')">حذف</button>`:''}
+            ${canDel?`<button class="btn btn-ghost" style="padding:4px 9px;font-size:11px;border-color:var(--warning);color:var(--warning);" onclick="event.stopPropagation();archiveTicket('${t.id}')">أرشفة</button>`:''}
           </div>
         </td>
       </tr>`;
@@ -707,7 +758,7 @@ async function openTicketDetail(id) {
   $('detailBtns').innerHTML = `
     ${canAssign?`<button class="btn btn-ghost" onclick="assignToMe('${id}')" style="border-color:var(--gold);color:var(--gold);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>تعيين لي</button>`:''}
     ${canUpdate?`<button class="btn btn-ghost" onclick="quickUpdate('${id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>تحديث الحالة</button>`:''}
-    ${canDelete?`<button class="btn btn-danger" onclick="deleteTicket('${id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>حذف التيكت</button>`:''}
+    ${canDelete?`<button class="btn btn-ghost" style="border-color:var(--warning);color:var(--warning);" onclick="archiveTicket('${id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M21 8v13H3V8M1 3h22v5H1z"/><line x1="10" y1="12" x2="14" y2="12"/></svg>أرشفة التيكت</button>`:''}
   `;
 
   const sla = getSLA(t);
@@ -928,11 +979,46 @@ async function addComment(ticketId) {
   } catch(e) { toast('فشل: '+e.message,'error'); }
 }
 
-// ── Delete Ticket ─────────────────────────────────────────
+// ── Archive Ticket ────────────────────────────────────────
+async function archiveTicket(id) {
+  const t = S.tickets.find(t=>t.id===id);
+  if (!t) return;
+  showConfirm('📦', 'أرشفة التيكت', `هل تريد أرشفة "${t.title}"؟\nيمكن استرجاعه لاحقاً من صفحة الأرشيف.`, async ()=>{
+    try {
+      await sbFetch(`/tickets?id=eq.${id}`, {
+        method:'PATCH',
+        body: JSON.stringify({ status:'archived', updated_at:new Date().toISOString() }),
+        headers:{'Prefer':'return=minimal'}
+      });
+      t.status = 'archived';
+      toast('تم أرشفة التيكت 📦');
+      if (S.page==='detail') showPage('alltickets');
+      else renderAllTickets();
+    } catch(e){ toast('فشل الأرشفة: '+e.message,'error'); }
+  });
+}
+
+// ── Restore Ticket ────────────────────────────────────────
+async function restoreTicket(id) {
+  const t = S.tickets.find(t=>t.id===id);
+  if (!t) return;
+  try {
+    await sbFetch(`/tickets?id=eq.${id}`, {
+      method:'PATCH',
+      body: JSON.stringify({ status:'closed', updated_at:new Date().toISOString() }),
+      headers:{'Prefer':'return=minimal'}
+    });
+    t.status = 'closed';
+    toast('تم استرجاع التيكت ✅');
+    renderArchive();
+  } catch(e){ toast('فشل الاسترجاع: '+e.message,'error'); }
+}
+
+// ── Delete Ticket (للمدير فقط — حذف نهائي من الأرشيف) ────
 async function deleteTicket(id) {
   const t = S.tickets.find(t=>t.id===id);
   if (!t) return;
-  showConfirm('🗑️', 'حذف التيكت', `هل أنت متأكد من حذف التيكت "${t.title}"؟\nهذا الإجراء لا يمكن التراجع عنه.`, async ()=>{
+  showConfirm('🗑️', 'حذف نهائي', `هل أنت متأكد من الحذف النهائي للتيكت "${t.title}"؟\nلا يمكن التراجع عن هذا الإجراء.`, async ()=>{
     try {
       const res = await fetch(CFG.authEndpoint, {
         method: 'POST',
@@ -942,9 +1028,8 @@ async function deleteTicket(id) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'فشل الحذف');
       S.tickets = S.tickets.filter(t=>t.id!==id);
-      toast('تم حذف التيكت');
-      if (S.page==='detail') showPage('alltickets');
-      else renderAllTickets();
+      toast('تم الحذف النهائي');
+      renderArchive();
     } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
   });
 }
@@ -1261,31 +1346,170 @@ async function doResetUserPassword() {
 function renderReports() {
   const isManager = S.user.role === 'manager';
   const tickets   = S.tickets;
-  const total     = tickets.length;
-  const resolved  = tickets.filter(t=>['resolved','closed'].includes(t.status)).length;
-  const open      = tickets.filter(t=>['open','assigned'].includes(t.status)).length;
-  const crit      = tickets.filter(t=>t.priority==='critical').length;
-  const resRate   = total?Math.round(resolved/total*100):0;
 
-  // Control reset button visibility
+  // ── حساب الشهر الحالي والشهر الماضي ─────────────────
+  const now       = new Date();
+  const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const lastMonthStart = new Date(now.getFullYear(), now.getMonth()-1, 1);
+  const lastMonthEnd   = new Date(now.getFullYear(), now.getMonth(), 0);
+
+  const thisMonth = tickets.filter(t=>new Date(t.created_at)>=thisMonthStart);
+  const lastMonth = tickets.filter(t=>new Date(t.created_at)>=lastMonthStart&&new Date(t.created_at)<=lastMonthEnd);
+
+  const total    = tickets.length;
+  const resolved = tickets.filter(t=>['resolved','closed'].includes(t.status)).length;
+  const open     = tickets.filter(t=>['open','assigned'].includes(t.status)).length;
+  const crit     = tickets.filter(t=>t.priority==='critical').length;
+  const resRate  = total?Math.round(resolved/total*100):0;
+
+  // تغيير الشهر
+  const thisMTotal = thisMonth.length;
+  const lastMTotal = lastMonth.length;
+  const monthDiff  = thisMTotal - lastMTotal;
+  const monthArrow = monthDiff>0?'↑':monthDiff<0?'↓':'—';
+  const monthColor = monthDiff>0?'#F87171':monthDiff<0?'#4ADE80':'var(--text-muted)';
+
   const _resetBtn = $('resetStatsBtn');
   if (_resetBtn) _resetBtn.style.display = isManager ? '' : 'none';
 
-  // ── Stats row — same for everyone ───────────────────
+  // ── Stats row ──────────────────────────────────────────
   const statsHtml = `
-    <div class="stats-row" style="margin-bottom:22px;">
+    <div class="stats-row" style="margin-bottom:16px;">
       ${[
-        ['معدل الحل',      total?resRate+'%':'—', 'من إجمالي التيكتات', '#4ADE80'],
+        ['معدل الحل',       total?resRate+'%':'—', 'من إجمالي التيكتات', '#4ADE80'],
         ['إجمالي التيكتات', total,                 'منذ البداية',         '#60A5FA'],
-        ['قيد الانتظار',   open,                  'تحتاج إجراء',         '#FCD34D'],
-        ['حرجة',           crit,                  'أولوية قصوى',          '#F87171'],
+        ['قيد الانتظار',    open,                  'تحتاج إجراء',         '#FCD34D'],
+        ['حرجة',            crit,                  'أولوية قصوى',          '#F87171'],
       ].map(([l,v,h,c])=>`
         <div class="stat-card" style="--_acc:${c}">
           <div class="stat-label">${l}</div>
           <div class="stat-val" style="color:${c}">${v}</div>
           <div class="stat-hint">${h}</div>
         </div>`).join('')}
+    </div>
+
+    <!-- مقارنة الشهرين -->
+    <div class="tbl-wrap" style="margin-bottom:20px;">
+      <div class="tbl-head">
+        <span class="tbl-head-title">مقارنة الأشهر</span>
+        <span style="font-size:12px;color:var(--text-muted);">${now.toLocaleDateString('ar-EG',{month:'long',year:'numeric'})}</span>
+      </div>
+      <table class="data-tbl">
+        <thead><tr><th></th><th>الشهر الحالي</th><th>الشهر الماضي</th><th>الفرق</th></tr></thead>
+        <tbody>
+          ${[
+            ['إجمالي التيكتات', thisMTotal, lastMTotal],
+            ['محلولة', thisMonth.filter(t=>['resolved','closed'].includes(t.status)).length, lastMonth.filter(t=>['resolved','closed'].includes(t.status)).length],
+            ['حرجة',   thisMonth.filter(t=>t.priority==='critical').length, lastMonth.filter(t=>t.priority==='critical').length],
+            ['مفتوحة', thisMonth.filter(t=>t.status==='open').length, lastMonth.filter(t=>t.status==='open').length],
+          ].map(([label,curr,prev])=>{
+            const diff=curr-prev;
+            const color=diff>0?'#F87171':diff<0?'#4ADE80':'var(--text-muted)';
+            const arrow=diff>0?'↑':diff<0?'↓':'—';
+            return `<tr>
+              <td style="font-weight:500;">${label}</td>
+              <td style="font-family:var(--font-mono);font-weight:600;">${curr}</td>
+              <td style="font-family:var(--font-mono);color:var(--text-muted);">${prev}</td>
+              <td style="font-family:var(--font-mono);color:${color};font-weight:600;">${arrow} ${Math.abs(diff)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
     </div>`;
+
+  // ── Admin view ─────────────────────────────────────────
+  if (!isManager) {
+    const myAssigned = tickets.filter(t=>t.assigned_to===S.user.id).length;
+    const myDone     = tickets.filter(t=>t.assigned_to===S.user.id&&['resolved','closed'].includes(t.status)).length;
+    const myOpen     = tickets.filter(t=>t.assigned_to===S.user.id&&['open','assigned','in_progress'].includes(t.status)).length;
+    const myRate     = myAssigned?Math.round(myDone/myAssigned*100):0;
+
+    $('reportsContent').innerHTML = statsHtml + `
+      <div class="tbl-wrap" style="margin-bottom:20px;">
+        <div class="tbl-head"><span class="tbl-head-title">أدائي الشخصي</span></div>
+        <table class="data-tbl">
+          <thead><tr><th>معين لي</th><th>محلولة</th><th>قيد التنفيذ</th><th>معدل الحل</th><th>الأداء</th></tr></thead>
+          <tbody><tr>
+            <td><strong>${myAssigned}</strong></td>
+            <td style="color:#4ADE80;">${myDone}</td>
+            <td style="color:#FCD34D;">${myOpen}</td>
+            <td style="font-family:var(--font-mono);">${myRate}%</td>
+            <td style="min-width:160px;">
+              <div class="sla-bar" style="height:8px;">
+                <div class="sla-fill ${myRate>=80?'sla-ok':myRate>=50?'sla-warn':'sla-crit'}" style="width:${myRate}%"></div>
+              </div>
+              <div style="font-size:10px;color:var(--text-muted);margin-top:3px;">${myRate>=80?'ممتاز 🌟':myRate>=50?'جيد':'يحتاج تحسين'}</div>
+            </td>
+          </tr></tbody>
+        </table>
+      </div>
+      <div class="tbl-wrap">
+        <div class="tbl-head"><span class="tbl-head-title">توزيع تيكتاتي حسب الفئة</span></div>
+        <table class="data-tbl">
+          <thead><tr><th>الفئة</th><th>إجمالي</th><th>مفتوح</th><th>محلول</th></tr></thead>
+          <tbody>${Object.entries(CAT_L).map(([k,v])=>{
+            const cat=tickets.filter(t=>t.assigned_to===S.user.id&&t.category===k);
+            if(!cat.length) return '';
+            return `<tr>
+              <td>${v}</td><td>${cat.length}</td>
+              <td>${cat.filter(t=>['open','assigned','in_progress'].includes(t.status)).length}</td>
+              <td>${cat.filter(t=>['resolved','closed'].includes(t.status)).length}</td>
+            </tr>`;
+          }).join('')||'<tr><td colspan="4"><div class="empty-state"><p>لا توجد تيكتات معينة لك</p></div></td></tr>'}
+          </tbody>
+        </table>
+      </div>`;
+    return;
+
+  // ── Manager view ───────────────────────────────────────
+  const itUsers = S.users.filter(u=>u.role==='admin');
+  const perf    = itUsers.map(u=>({
+    name: u.name,
+    asgn: tickets.filter(t=>t.assigned_to===u.id).length,
+    done: tickets.filter(t=>t.assigned_to===u.id&&['resolved','closed'].includes(t.status)).length,
+    rate: 0
+  })).map(p=>({...p, rate:p.asgn?Math.round(p.done/p.asgn*100):0}));
+
+  $('reportsContent').innerHTML = statsHtml + `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+      <button class="btn btn-ghost" onclick="exportExcel()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        تصدير Excel
+      </button>
+    </div>
+    <div class="tbl-wrap" style="margin-bottom:20px;">
+      <div class="tbl-head"><span class="tbl-head-title">أداء فريق IT</span></div>
+      <table class="data-tbl">
+        <thead><tr><th>الفني</th><th>معين له</th><th>محلولة</th><th>معدل الحل</th><th>الأداء</th></tr></thead>
+        <tbody>${perf.length?perf.map(p=>`<tr>
+          <td><strong>${_e(p.name)}</strong></td>
+          <td>${p.asgn}</td><td>${p.done}</td>
+          <td style="font-family:var(--font-mono);">${p.rate}%</td>
+          <td style="min-width:140px;">
+            <div class="sla-bar" style="height:7px;">
+              <div class="sla-fill ${p.rate>=80?'sla-ok':p.rate>=50?'sla-warn':'sla-crit'}" style="width:${p.rate}%"></div>
+            </div>
+          </td>
+        </tr>`).join(''):'<tr><td colspan="5"><div class="empty-state"><p>لا يوجد فريق IT</p></div></td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    <div class="tbl-wrap">
+      <div class="tbl-head"><span class="tbl-head-title">التوزيع حسب الفئة</span></div>
+      <table class="data-tbl">
+        <thead><tr><th>الفئة</th><th>إجمالي</th><th>مفتوح</th><th>محلول</th></tr></thead>
+        <tbody>${Object.entries(CAT_L).map(([k,v])=>{
+          const cat=tickets.filter(t=>t.category===k);
+          if(!cat.length) return '';
+          return `<tr>
+            <td>${v}</td><td>${cat.length}</td>
+            <td>${cat.filter(t=>['open','assigned'].includes(t.status)).length}</td>
+            <td>${cat.filter(t=>['resolved','closed'].includes(t.status)).length}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>`;
+}
 
   // ── Admin: only sees their own performance ───────────
   if (!isManager) {
@@ -1588,6 +1812,22 @@ async function changePassword() {
 // ═══════════════════════════════════════════════════════
 //  NOTIFICATIONS
 // ═══════════════════════════════════════════════════════
+function playNotifSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(660, ctx.currentTime + 0.1);
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.3);
+  } catch { /* مش كل المتصفحات بتدعم AudioContext */ }
+}
+
 function renderNotifPanel() {
   // Deduplicate: if same title sent within 60s, show only first occurrence
   const seen = new Map();
@@ -1600,8 +1840,15 @@ function renderNotifPanel() {
 
   const unread = deduped.filter(n=>!n.is_read);
   const badge  = $('notifBadge');
-  if (unread.length>0) { badge.textContent=unread.length; badge.style.display='flex'; }
-  else badge.style.display='none';
+  const prevCount = parseInt(badge.textContent||'0');
+  if (unread.length > 0) {
+    badge.textContent = unread.length;
+    badge.style.display = 'flex';
+    // صوت فقط لما يزيد العدد (إشعار جديد وصل)
+    if (unread.length > prevCount) playNotifSound();
+  } else {
+    badge.style.display = 'none';
+  }
 
   $('notifList').innerHTML = deduped.length
     ? deduped.map(n=>`
@@ -1676,7 +1923,105 @@ function exportCSV() {
   a.href = URL.createObjectURL(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'}));
   a.download = `GAS-IT-Tickets-${new Date().toISOString().slice(0,10)}.csv`;
   a.click();
-  toast('تم تصدير التيكتات');
+  toast('تم تصدير التيكتات CSV');
+}
+
+function exportExcel() {
+  // بناء XML بصيغة Excel
+  const headers = ['رقم التيكت','العنوان','مقدم الطلب','القسم','الأولوية','الحالة','المعين','التاريخ'];
+  const rows = S.tickets.map(t=>[
+    t.ticket_number, t.title, uname(t.created_by), udept(t.created_by),
+    PRIO_L[t.priority]||t.priority, STATUS_L[t.status]||t.status,
+    t.assigned_to ? uname(t.assigned_to) : '—', _d(t.created_at)
+  ]);
+
+  const esc = v => String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const cell = v => `<Cell><Data ss:Type="String">${esc(v)}</Data></Cell>`;
+  const row  = cols => `<Row>${cols.map(cell).join('')}</Row>`;
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Styles>
+  <Style ss:ID="H"><Font ss:Bold="1"/><Interior ss:Color="#1E293B" ss:Pattern="Solid"/><Font ss:Color="#FFFFFF" ss:Bold="1"/></Style>
+ </Styles>
+ <Worksheet ss:Name="التيكتات">
+  <Table>
+   <Row>${headers.map(h=>`<Cell ss:StyleID="H"><Data ss:Type="String">${esc(h)}</Data></Cell>`).join('')}</Row>
+   ${rows.map(row).join('\n   ')}
+  </Table>
+ </Worksheet>
+</Workbook>`;
+
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\uFEFF'+xml],{type:'application/vnd.ms-excel;charset=utf-8;'}));
+  a.download = `GAS-IT-Tickets-${new Date().toISOString().slice(0,10)}.xls`;
+  a.click();
+  toast('تم تصدير Excel ✅');
+}
+
+// ═══════════════════════════════════════════════════════
+//  ARCHIVE
+// ═══════════════════════════════════════════════════════
+function renderArchive() {
+  if (S.user.role !== 'manager') { showPage('dashboard'); return; }
+
+  const archived = S.tickets.filter(t=>t.status==='archived');
+
+  $('archiveContent').innerHTML = `
+    <div class="tbl-wrap">
+      <div class="tbl-head">
+        <span class="tbl-head-title">التيكتات المؤرشفة (${archived.length})</span>
+        <input class="s-input" placeholder="بحث..." oninput="filterArchive(this.value)" style="width:200px;">
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="data-tbl" id="archiveTbl">
+          <thead><tr>
+            <th>رقم التيكت</th><th>العنوان</th><th>مقدم الطلب</th><th>الأولوية</th><th>التاريخ</th><th>إجراء</th>
+          </tr></thead>
+          <tbody id="archiveTbody">
+            ${archived.length ? archived.map(t=>`
+              <tr>
+                <td><span class="tnum">${_e(t.ticket_number)}</span></td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}</td>
+                <td>${_e(uname(t.created_by))}</td>
+                <td>${pbadge(t.priority)}</td>
+                <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
+                <td>
+                  <div style="display:flex;gap:5px;">
+                    <button class="btn btn-ghost" style="padding:4px 9px;font-size:11px;border-color:var(--success);color:var(--success);" onclick="restoreTicket('${t.id}')">استرجاع</button>
+                    <button class="btn btn-danger" style="padding:4px 9px;font-size:11px;" onclick="deleteTicket('${t.id}')">حذف نهائي</button>
+                  </div>
+                </td>
+              </tr>`).join('') : `<tr><td colspan="6"><div class="empty-state"><p>لا توجد تيكتات مؤرشفة</p></div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function filterArchive(q) {
+  const archived = S.tickets.filter(t=>t.status==='archived');
+  const filtered = q
+    ? archived.filter(t=>t.title.includes(q)||t.ticket_number.includes(q)||uname(t.created_by).includes(q))
+    : archived;
+  const tbody = $('archiveTbody');
+  if (!tbody) return;
+  tbody.innerHTML = filtered.length ? filtered.map(t=>`
+    <tr>
+      <td><span class="tnum">${_e(t.ticket_number)}</span></td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}</td>
+      <td>${_e(uname(t.created_by))}</td>
+      <td>${pbadge(t.priority)}</td>
+      <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
+      <td>
+        <div style="display:flex;gap:5px;">
+          <button class="btn btn-ghost" style="padding:4px 9px;font-size:11px;border-color:var(--success);color:var(--success);" onclick="restoreTicket('${t.id}')">استرجاع</button>
+          <button class="btn btn-danger" style="padding:4px 9px;font-size:11px;" onclick="deleteTicket('${t.id}')">حذف نهائي</button>
+        </div>
+      </td>
+    </tr>`).join('') : `<tr><td colspan="6"><div class="empty-state"><p>لا توجد نتائج</p></div></td></tr>`;
 }
 
 // ═══════════════════════════════════════════════════════
