@@ -46,26 +46,26 @@
 
 /* ── LIGHT THEME ── */
 [data-theme="light"] {
-  --bg-base:     #F1F3F7;
+  --bg-base:     #ECEEF2;
   --bg-surface:  #FFFFFF;
   --bg-card:     #FFFFFF;
-  --bg-elevated: #F3F4F6;
-  --bg-input:    #F9FAFB;
-  --bg-hover:    rgba(184,151,90,0.12);
+  --bg-elevated: #F0F2F5;
+  --bg-input:    #F7F8FA;
+  --bg-hover:    rgba(184,151,90,0.10);
 
-  --border:      rgba(0,0,0,0.14);
-  --border-gold: rgba(184,151,90,0.40);
-  --border-focus:rgba(184,151,90,0.6);
+  --border:      rgba(0,0,0,0.12);
+  --border-gold: rgba(184,151,90,0.45);
+  --border-focus:rgba(184,151,90,0.65);
 
-  --text-primary:   #111827;
-  --text-secondary: #374151;
-  --text-muted:     #6B7280;
+  --text-primary:   #0D1117;
+  --text-secondary: #24292F;
+  --text-muted:     #57606A;
   --text-inverted:  #FFFFFF;
 
-  --gold:       #B8975A;
-  --gold-light: #D4AF37;
-  --gold-dim:   #C4A46B;
-  --gold-glow:  rgba(184,151,90,0.15);
+  --gold:       #996B2E;
+  --gold-light: #B8860B;
+  --gold-dim:   #7A5520;
+  --gold-glow:  rgba(153,107,46,0.12);
 
   --shadow-card: 0 6px 20px rgba(0,0,0,0.12);
   --shadow-modal:0 24px 80px rgba(0,0,0,0.2);
@@ -449,6 +449,23 @@ body {
 .b-mgr     { background:rgba(184,151,90,.12); color:var(--gold); border:1px solid var(--border-gold); }
 .b-active  { background:var(--success-bg);    color:#4ADE80; border:1px solid rgba(22,163,74,.25); }
 .b-inactive{ background:rgba(107,114,128,.1); color:#9CA3AF; border:1px solid rgba(107,114,128,.2); }
+
+/* ── LIGHT MODE BADGE OVERRIDES ── */
+[data-theme="light"] .b-open    { background:#DBEAFE; color:#1D4ED8; border-color:#BFDBFE; }
+[data-theme="light"] .b-assign  { background:#CFFAFE; color:#0E7490; border-color:#A5F3FC; }
+[data-theme="light"] .b-prog    { background:#FEF3C7; color:#92400E; border-color:#FDE68A; }
+[data-theme="light"] .b-resolve { background:#DCFCE7; color:#15803D; border-color:#BBF7D0; }
+[data-theme="light"] .b-closed  { background:#F3F4F6; color:#374151; border-color:#D1D5DB; }
+[data-theme="light"] .b-escal   { background:#FEE2E2; color:#B91C1C; border-color:#FECACA; }
+[data-theme="light"] .b-crit    { background:#FEE2E2; color:#B91C1C; border-color:#FECACA; }
+[data-theme="light"] .b-high    { background:#FFEDD5; color:#C2410C; border-color:#FED7AA; }
+[data-theme="light"] .b-med     { background:#FEF9C3; color:#854D0E; border-color:#FEF08A; }
+[data-theme="light"] .b-low     { background:#DCFCE7; color:#15803D; border-color:#BBF7D0; }
+[data-theme="light"] .b-emp     { background:#DBEAFE; color:#1D4ED8; border-color:#BFDBFE; }
+[data-theme="light"] .b-admin   { background:#F3E8FF; color:#6D28D9; border-color:#DDD6FE; }
+[data-theme="light"] .b-mgr     { background:#FEF3C7; color:#92400E; border-color:#FDE68A; }
+[data-theme="light"] .b-active  { background:#DCFCE7; color:#15803D; border-color:#BBF7D0; }
+[data-theme="light"] .b-inactive{ background:#F3F4F6; color:#6B7280; border-color:#D1D5DB; }
 
 /* ── BUTTONS ── */
 .btn {
