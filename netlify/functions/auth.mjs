@@ -216,6 +216,21 @@ export default async (req) => {
     }
   }
 
+  // ── HEARTBEAT PING ────────────────────────────────────
+  if (action === "ping") {
+    const { token } = body;
+    if (!token) return Response.json({ ok: true });
+    try {
+      const tokenHash = sha256(token);
+      await sb(`/sessions?token=eq.${tokenHash}`, {
+        method: "PATCH",
+        body: JSON.stringify({ last_seen: new Date().toISOString() }),
+        headers: { Prefer: "return=minimal" }
+      });
+    } catch { /* non-critical */ }
+    return Response.json({ ok: true });
+  }
+
   // ── LOGOUT ────────────────────────────────────────────
   if (action === "logout") {
     const { token } = body;
@@ -237,8 +252,9 @@ export default async (req) => {
       return Response.json({ error: "هذه العملية للمديرين فقط" }, { status: 403 });
     }
     try {
+      const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
       const sessions = await sb(
-        `/sessions?expires_at=gt.${new Date().toISOString()}&select=user_id,created_at`
+        `/sessions?expires_at=gt.${new Date().toISOString()}&last_seen=gt.${fiveMinAgo}&select=user_id,created_at,last_seen`
       );
       // Deduplicate by user_id (one session per user)
       const seen = new Set();
