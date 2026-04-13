@@ -845,17 +845,6 @@ async function addComment(ticketId) {
     if (!t.comments) t.comments=[];
     if (saved?.[0]) t.comments.push(saved[0]);
     else t.comments.push({...comment, id:'local'+Date.now(), created_at:new Date().toISOString()});
-
-    // إشعار صاحب التيكت لو المعلق مش هو نفسه
-    if (S.user.role !== 'employee' && t.created_by && t.created_by !== S.user.id) {
-      sbFetch('/notifications', { method:'POST', body: JSON.stringify({
-        user_id: t.created_by,
-        title: `رد جديد على تيكتك: ${t.title}`,
-        body: `${S.user.name}: ${text.slice(0, 60)}${text.length > 60 ? '...' : ''}`,
-        is_read: false
-      })}).catch(()=>{});
-    }
-
     openTicketDetail(ticketId);
     toast('تم إضافة التعليق');
   } catch(e) { toast('فشل: '+e.message,'error'); }
