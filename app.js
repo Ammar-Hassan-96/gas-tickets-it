@@ -225,8 +225,9 @@ async function tryRestoreSession() {
 }
 
 function doLogout() {
-  // Stop heartbeat
+  // Stop heartbeat and SLA check
   if (S._heartbeat) { clearInterval(S._heartbeat); S._heartbeat = null; }
+  if (S._slaCheck)  { clearInterval(S._slaCheck);  S._slaCheck  = null; }
   // Invalidate session on server (fire-and-forget)
   if (S.token) {
     fetch(CFG.authEndpoint, {
@@ -266,6 +267,35 @@ async function bootApp() {
       body: JSON.stringify({ action:'ping', token: S.token })
     }).catch(()=>{});
   }, 3 * 60 * 1000);
+
+  // SLA Check — كل 30 دقيقة تبعت تنبيه للـ admin لو تيكت اقترب من الانتهاء
+  if (S._slaCheck) clearInterval(S._slaCheck);
+  checkSLAAlerts();
+  S._slaCheck = setInterval(checkSLAAlerts, 30 * 60 * 1000);
+}
+
+function checkSLAAlerts() {
+  if (!S.user || S.user.role === 'employee') return;
+  const now = Date.now();
+  S.tickets.forEach(t => {
+    if (['resolved','closed'].includes(t.status)) return;
+    const slaH    = PRIO_SLA[t.priority] || 24;
+    const elapsed = (now - new Date(t.created_at)) / 3600000;
+    const pct     = elapsed / slaH * 100;
+    // تنبيه لما يوصل 80% من الـ SLA ومتبعتش تنبيه لنفس التيكت قبل كده
+    if (pct >= 80 && pct < 100) {
+      const key = `sla_warned_${t.id}`;
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, '1');
+      const rem = Math.round(slaH - elapsed);
+      sbFetch('/notifications', { method:'POST', body: JSON.stringify({
+        user_id: S.user.id,
+        title:   `⚠️ SLA قارب على الانتهاء: ${t.ticket_number}`,
+        body:    `متبقي ${rem} ساعة — ${t.title}`,
+        is_read: false
+      })}).catch(()=>{});
+    }
+  });
 }
 
 async function loadTickets() {
@@ -746,6 +776,17 @@ async function assignToMe(ticketId) {
     });
     t.assigned_to = S.user.id;
     if (t.status==='open') t.status = 'assigned';
+
+    // إشعار صاحب التيكت
+    if (t.created_by && t.created_by !== S.user.id) {
+      sbFetch('/notifications', { method:'POST', body: JSON.stringify({
+        user_id: t.created_by,
+        title:   `جارٍ العمل على تيكتك: ${t.title}`,
+        body:    `تم تعيين ${S.user.name} للعمل على طلبك`,
+        is_read: false
+      })}).catch(()=>{});
+    }
+
     toast('✅ تم تعيين التيكت لك');
     openTicketDetail(ticketId);
   } catch(e) { toast('فشل التعيين: '+e.message, 'error'); }
@@ -791,11 +832,12 @@ async function saveTicketUpdate() {
   const newStatus     = $('upd_status').value;
   const note          = $('upd_note').value.trim();
   const assignedToVal = $('upd_assigned_to').value;
-  // Manager: use selected value (can be empty = unassign)
-  // Admin: keep existing or assign to self
   const newAssigned = S.user.role === 'manager'
     ? (assignedToVal || null)
     : (t.assigned_to || S.user.id);
+
+  const prevStatus   = t.status;
+  const prevAssigned = t.assigned_to;
 
   try {
     await sbFetch(`/tickets?id=eq.${t.id}`, {
@@ -815,9 +857,28 @@ async function saveTicketUpdate() {
       if (saved?.[0]) t.comments.push(saved[0]);
     }
 
-    const prevAssigned = t.assigned_to;
     t.status      = newStatus;
     t.assigned_to = newAssigned;
+
+    // ── إشعار صاحب التيكت عند تغيير الحالة ──
+    if (newStatus !== prevStatus && t.created_by && t.created_by !== S.user.id) {
+      sbFetch('/notifications', { method:'POST', body: JSON.stringify({
+        user_id: t.created_by,
+        title:   `تم تحديث تيكتك: ${t.title}`,
+        body:    `الحالة تغيرت إلى "${STATUS_L[newStatus]||newStatus}" — بواسطة ${S.user.name}`,
+        is_read: false
+      })}).catch(()=>{});
+    }
+
+    // ── إشعار الـ admin المعين لما يتعين عليه تيكت جديد ──
+    if (newAssigned && newAssigned !== prevAssigned && newAssigned !== S.user.id) {
+      sbFetch('/notifications', { method:'POST', body: JSON.stringify({
+        user_id: newAssigned,
+        title:   `تم تعيين تيكت لك: ${t.title}`,
+        body:    `من ${S.user.name} — أولوية ${PRIO_L[t.priority]||t.priority}`,
+        is_read: false
+      })}).catch(()=>{});
+    }
 
     const msg = (S.user.role === 'manager' && newAssigned !== prevAssigned && newAssigned)
       ? `تم التحديث · معين لـ ${uname(newAssigned)}`
