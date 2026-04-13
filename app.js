@@ -943,6 +943,7 @@ async function saveTicketUpdate() {
 
     closeModal('updateTicketModal');
     toast(msg);
+    refreshNavCounts();
     if (S.page==='detail') openTicketDetail(t.id);
     else renderAllTickets();
   } catch(e) {
@@ -991,6 +992,7 @@ async function archiveTicket(id) {
         headers:{'Prefer':'return=minimal'}
       });
       t.status = 'archived';
+      refreshNavCounts();
       toast('تم أرشفة التيكت 📦');
       if (S.page==='detail') showPage('alltickets');
       else renderAllTickets();
@@ -1009,6 +1011,7 @@ async function restoreTicket(id) {
       headers:{'Prefer':'return=minimal'}
     });
     t.status = 'closed';
+    refreshNavCounts();
     toast('تم استرجاع التيكت ✅');
     renderArchive();
   } catch(e){ toast('فشل الاسترجاع: '+e.message,'error'); }
@@ -1028,6 +1031,7 @@ async function deleteTicket(id) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'فشل الحذف');
       S.tickets = S.tickets.filter(t=>t.id!==id);
+      refreshNavCounts();
       toast('تم الحذف النهائي');
       renderArchive();
     } catch(e){ toast('فشل الحذف: '+e.message,'error'); }
@@ -1089,6 +1093,7 @@ async function submitTicket() {
 
     closeModal('newTicketModal');
     toast(`تم إرسال التيكت ${newTicket.ticket_number || ''}`);
+    refreshNavCounts();
     showPage('mytickets');
   } catch(e){ toast('فشل الإرسال: '+e.message,'error'); }
 }
