@@ -601,7 +601,7 @@ function applyMyFilter(list) {
 // ═══════════════════════════════════════════════════════
 function renderAllTickets() {
   // Reset filters when page loads fresh
-  S.allFilter = { status: '', priority: '', search: '' };
+  S.allFilter = { status: '', priority: '', search: '', date: '' };
   const inputs = document.querySelectorAll('#page-alltickets .s-input, #page-alltickets .s-select');
   inputs.forEach(el => { el.value = ''; });
   renderTicketRows('allTbody', applyAllFilter(S.tickets), true);
@@ -613,6 +613,7 @@ function filterAllTickets(q) {
 function filterAll(key, val) {
   if (key==='status')   S.allFilter.status   = val;
   if (key==='priority') S.allFilter.priority = val;
+  if (key==='date')     S.allFilter.date     = val;
   renderTicketRows('allTbody', applyAllFilter(S.tickets), true);
 }
 function applyAllFilter(list) {
@@ -620,6 +621,11 @@ function applyAllFilter(list) {
   if (S.allFilter.status)   r = r.filter(t=>t.status===S.allFilter.status);
   if (S.allFilter.priority) r = r.filter(t=>t.priority===S.allFilter.priority);
   if (S.allFilter.search)   r = r.filter(t=>t.title.includes(S.allFilter.search)||t.ticket_number.includes(S.allFilter.search)||uname(t.created_by).includes(S.allFilter.search));
+  if (S.allFilter.date) {
+    const now = Date.now();
+    const ms  = { today: 86400000, week: 604800000, month: 2592000000 }[S.allFilter.date];
+    if (ms) r = r.filter(t => now - new Date(t.created_at) <= ms);
+  }
   return r;
 }
 
@@ -1005,18 +1011,51 @@ async function submitTicket() {
 // ═══════════════════════════════════════════════════════
 //  USERS
 // ═══════════════════════════════════════════════════════
+// ── Users Filter ─────────────────────────────────────────
+const usersFilter = { search: '', role: '' };
+
+function filterUsers(q) {
+  usersFilter.search = q;
+  renderUsersGrid();
+}
+function filterUsersByRole(r) {
+  usersFilter.role = r;
+  renderUsersGrid();
+}
+
 function renderUsers() {
+  usersFilter.search = '';
+  usersFilter.role   = '';
+  const el = $('usersSearch');
+  if (el) el.value = '';
+  renderUsersGrid();
+}
+
+function renderUsersGrid() {
   const grid = $('usersGrid');
-  // Hide the developer/system account from manager view
-  const HIDDEN_ACCOUNTS = ['ammar.admin'];
-  const visibleUsers = S.users.filter(u => !HIDDEN_ACCOUNTS.includes(u.username));
-  if (!visibleUsers.length) {
-    grid.innerHTML = `<div class="empty-state"><p>لا يوجد مستخدمون</p></div>`; return;
+  const HIDDEN = ['ammar.admin'];
+  let list = S.users.filter(u => !HIDDEN.includes(u.username));
+
+  if (usersFilter.search) {
+    const q = usersFilter.search.toLowerCase();
+    list = list.filter(u =>
+      u.name.toLowerCase().includes(q) ||
+      (u.department||'').toLowerCase().includes(q) ||
+      u.username.toLowerCase().includes(q)
+    );
   }
-  grid.innerHTML = visibleUsers.map(u=>{
+  if (usersFilter.role) {
+    list = list.filter(u => u.role === usersFilter.role);
+  }
+
+  if (!list.length) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><p>لا يوجد مستخدمون مطابقون</p></div>`;
+    return;
+  }
+  grid.innerHTML = list.map(u => {
     const myT = S.tickets.filter(t=>t.created_by===u.id).length;
-    const asgn= S.tickets.filter(t=>t.assigned_to===u.id).length;
-    const res = S.tickets.filter(t=>t.assigned_to===u.id&&['resolved','closed'].includes(t.status)).length;
+    const asgn = S.tickets.filter(t=>t.assigned_to===u.id).length;
+    const res  = S.tickets.filter(t=>t.assigned_to===u.id&&['resolved','closed'].includes(t.status)).length;
     const roleBadge = { employee:'b-emp', admin:'b-admin', manager:'b-mgr' }[u.role]||'b-emp';
     return `
       <div class="user-card">

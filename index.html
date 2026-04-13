@@ -972,6 +972,12 @@ body {
                 <option value="medium">متوسطة</option>
                 <option value="low">منخفضة</option>
               </select>
+              <select class="s-select" onchange="filterAll('date',this.value)">
+                <option value="">كل الأوقات</option>
+                <option value="today">اليوم</option>
+                <option value="week">آخر 7 أيام</option>
+                <option value="month">آخر 30 يوم</option>
+              </select>
             </div>
           </div>
           <div style="overflow-x:auto;">
@@ -1009,6 +1015,13 @@ body {
             <p class="ph-sub">إدارة حسابات الموظفين وفريق IT</p>
           </div>
           <div class="ph-right">
+            <input class="s-input" id="usersSearch" placeholder="بحث بالاسم أو القسم..." oninput="filterUsers(this.value)" style="width:220px;">
+            <select class="s-select" onchange="filterUsersByRole(this.value)">
+              <option value="">كل الأدوار</option>
+              <option value="employee">موظف</option>
+              <option value="admin">IT Admin</option>
+              <option value="manager">مدير</option>
+            </select>
             <button class="btn btn-gold" onclick="openNewUserModal()">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               مستخدم جديد
