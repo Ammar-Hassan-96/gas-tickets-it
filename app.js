@@ -1407,20 +1407,21 @@ function renderReports() {
   if (_resetBtn) _resetBtn.style.display = isManager ? '' : 'none';
 
   // ── Stats row ──────────────────────────────────────────
-  const statsHtml = `
-    <div class="stats-row" style="margin-bottom:16px;">
-      ${[
-        ['معدل الحل',       total?resRate+'%':'—', 'من إجمالي التيكتات', '#4ADE80'],
-        ['إجمالي التيكتات', total,                 'منذ البداية',         '#60A5FA'],
-        ['قيد الانتظار',    open,                  'تحتاج إجراء',         '#FCD34D'],
-        ['حرجة',            crit,                  'أولوية قصوى',          '#F87171'],
-      ].map(([l,v,h,c])=>`
-        <div class="stat-card" style="--_acc:${c}">
-          <div class="stat-label">${l}</div>
-          <div class="stat-val" style="color:${c}">${v}</div>
-          <div class="stat-hint">${h}</div>
-        </div>`).join('')}
-    </div>`;
+  const statsHtml =
+    '<div class="stats-row" style="margin-bottom:16px;">' +
+    [
+      ['معدل الحل',       total?resRate+'%':'—', 'من إجمالي التيكتات', '#4ADE80'],
+      ['إجمالي التيكتات', total,                 'منذ البداية',         '#60A5FA'],
+      ['قيد الانتظار',    open,                  'تحتاج إجراء',         '#FCD34D'],
+      ['حرجة',            crit,                  'أولوية قصوى',          '#F87171'],
+    ].map(([l,v,h,c]) =>
+      '<div class="stat-card" style="--_acc:' + c + '">' +
+        '<div class="stat-label">' + l + '</div>' +
+        '<div class="stat-val" style="color:' + c + '">' + v + '</div>' +
+        '<div class="stat-hint">' + h + '</div>' +
+      '</div>'
+    ).join('') +
+    '</div>';
 
   // مقارنة الأشهر — للمدير فقط
   let monthHtml = '';
