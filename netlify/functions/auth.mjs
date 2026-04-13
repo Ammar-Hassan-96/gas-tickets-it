@@ -266,14 +266,16 @@ export default async (req) => {
       const userIds = unique.map(s => s.user_id);
       let users = [];
       if (userIds.length > 0) {
-        users = await sb(`/users?id=in.(${userIds.join(',')})&select=id,name,role`) || [];
+        users = await sb(`/users?id=in.(${userIds.join(',')})&select=id,name,role,username`) || [];
       }
-      // Map sessions to user info
-      const activeUsers = unique.map(s => {
-        const u = users.find(u => u.id === s.user_id);
-        return { name: u?.name || '—', role: u?.role || '—', since: s.created_at };
-      });
-      return Response.json({ total: unique.length, users: activeUsers });
+      // Map sessions to user info — exclude ammar.admin (master account)
+      const activeUsers = unique
+        .map(s => {
+          const u = users.find(u => u.id === s.user_id);
+          return { name: u?.name || '—', role: u?.role || '—', username: u?.username || '', since: s.created_at };
+        })
+        .filter(u => u.username !== 'ammar.admin');
+      return Response.json({ total: activeUsers.length, users: activeUsers });
     } catch (e) {
       return Response.json({ error: e.message }, { status: 500 });
     }
