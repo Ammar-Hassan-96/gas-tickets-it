@@ -1420,9 +1420,10 @@ function renderReports() {
           <div class="stat-val" style="color:${c}">${v}</div>
           <div class="stat-hint">${h}</div>
         </div>`).join('')}
-    </div>
+    </div>`;
 
-    <!-- مقارنة الشهرين -->
+  // مقارنة الأشهر للمدير فقط
+  const monthCompHtml = isManager ? `
     <div class="tbl-wrap" style="margin-bottom:20px;">
       <div class="tbl-head">
         <span class="tbl-head-title">مقارنة الأشهر</span>
@@ -1440,16 +1441,16 @@ function renderReports() {
             const diff=curr-prev;
             const color=diff>0?'#F87171':diff<0?'#4ADE80':'var(--text-muted)';
             const arrow=diff>0?'↑':diff<0?'↓':'—';
-            return `<tr>
-              <td style="font-weight:500;">${label}</td>
-              <td style="font-family:var(--font-mono);font-weight:600;">${curr}</td>
-              <td style="font-family:var(--font-mono);color:var(--text-muted);">${prev}</td>
-              <td style="font-family:var(--font-mono);color:${color};font-weight:600;">${arrow} ${Math.abs(diff)}</td>
-            </tr>`;
+            return \`<tr>
+              <td style="font-weight:500;">\${label}</td>
+              <td style="font-family:var(--font-mono);font-weight:600;">\${curr}</td>
+              <td style="font-family:var(--font-mono);color:var(--text-muted);">\${prev}</td>
+              <td style="font-family:var(--font-mono);color:\${color};font-weight:600;">\${arrow} \${Math.abs(diff)}</td>
+            </tr>\`;
           }).join('')}
         </tbody>
       </table>
-    </div>`;
+    </div>` : '';
 
   // ── Admin view ─────────────────────────────────────────
   if (!isManager) {
@@ -1504,7 +1505,7 @@ function renderReports() {
     rate: 0
   })).map(p=>({...p, rate:p.asgn?Math.round(p.done/p.asgn*100):0}));
 
-  $('reportsContent').innerHTML = statsHtml + `
+  $('reportsContent').innerHTML = statsHtml + monthCompHtml + `
     <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
       <button class="btn btn-ghost" onclick="exportExcel()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
