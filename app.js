@@ -1423,35 +1423,32 @@ function renderReports() {
     </div>`;
 
   // مقارنة الأشهر — للمدير فقط
-  const monthHtml = isManager ? `
-    <!-- مقارنة الشهرين -->
-    <div class="tbl-wrap" style="margin-bottom:20px;">
-      <div class="tbl-head">
-        <span class="tbl-head-title">مقارنة الأشهر</span>
-        <span style="font-size:12px;color:var(--text-muted);">${now.toLocaleDateString('ar-EG',{month:'long',year:'numeric'})}</span>
-      </div>
-      <table class="data-tbl">
-        <thead><tr><th></th><th>الشهر الحالي</th><th>الشهر الماضي</th><th>الفرق</th></tr></thead>
-        <tbody>
-          ${[
-            ['إجمالي التيكتات', thisMTotal, lastMTotal],
-            ['محلولة', thisMonth.filter(t=>['resolved','closed'].includes(t.status)).length, lastMonth.filter(t=>['resolved','closed'].includes(t.status)).length],
-            ['حرجة',   thisMonth.filter(t=>t.priority==='critical').length, lastMonth.filter(t=>t.priority==='critical').length],
-            ['مفتوحة', thisMonth.filter(t=>t.status==='open').length, lastMonth.filter(t=>t.status==='open').length],
-          ].map(([label,curr,prev])=>{
-            const diff=curr-prev;
-            const color=diff>0?'#F87171':diff<0?'#4ADE80':'var(--text-muted)';
-            const arrow=diff>0?'↑':diff<0?'↓':'—';
-            return `<tr>
-              <td style="font-weight:500;">${label}</td>
-              <td style="font-family:var(--font-mono);font-weight:600;">${curr}</td>
-              <td style="font-family:var(--font-mono);color:var(--text-muted);">${prev}</td>
-              <td style="font-family:var(--font-mono);color:${color};font-weight:600;">${arrow} ${Math.abs(diff)}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-    </div>` : '';
+  let monthHtml = '';
+  if (isManager) {
+    const monthRows = [
+      ['إجمالي التيكتات', thisMTotal, lastMTotal],
+      ['محلولة', thisMonth.filter(t=>['resolved','closed'].includes(t.status)).length, lastMonth.filter(t=>['resolved','closed'].includes(t.status)).length],
+      ['حرجة',   thisMonth.filter(t=>t.priority==='critical').length, lastMonth.filter(t=>t.priority==='critical').length],
+      ['مفتوحة', thisMonth.filter(t=>t.status==='open').length, lastMonth.filter(t=>t.status==='open').length],
+    ].map(([label,curr,prev]) => {
+      const diff  = curr - prev;
+      const color = diff>0 ? '#F87171' : diff<0 ? '#4ADE80' : 'var(--text-muted)';
+      const arrow = diff>0 ? '↑' : diff<0 ? '↓' : '—';
+      return '<tr><td style="font-weight:500;">' + label + '</td>' +
+             '<td style="font-family:var(--font-mono);font-weight:600;">' + curr + '</td>' +
+             '<td style="font-family:var(--font-mono);color:var(--text-muted);">' + prev + '</td>' +
+             '<td style="font-family:var(--font-mono);color:' + color + ';font-weight:600;">' + arrow + ' ' + Math.abs(diff) + '</td></tr>';
+    }).join('');
+    monthHtml = '<div class="tbl-wrap" style="margin-bottom:20px;">' +
+      '<div class="tbl-head">' +
+        '<span class="tbl-head-title">مقارنة الأشهر</span>' +
+        '<span style="font-size:12px;color:var(--text-muted);">' + now.toLocaleDateString('ar-EG',{month:'long',year:'numeric'}) + '</span>' +
+      '</div>' +
+      '<table class="data-tbl">' +
+        '<thead><tr><th></th><th>الشهر الحالي</th><th>الشهر الماضي</th><th>الفرق</th></tr></thead>' +
+        '<tbody>' + monthRows + '</tbody>' +
+      '</table></div>';
+  }
 
   // ── Admin view ─────────────────────────────────────────
   if (!isManager) {
