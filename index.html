@@ -862,7 +862,10 @@ body {
         <div class="notif-panel" id="notifPanel">
           <div class="np-head">
             <span class="np-title">الإشعارات</span>
-            <button class="np-readall" onclick="markAllNotifRead()">قراءة الكل</button>
+            <div style="display:flex;gap:8px;">
+              <button class="np-readall" onclick="markAllNotifRead()">قراءة الكل</button>
+              <button class="np-readall" style="color:var(--danger);" onclick="deleteAllNotifs()">مسح الكل</button>
+            </div>
           </div>
           <div class="np-list" id="notifList"></div>
         </div>

@@ -1853,8 +1853,13 @@ function renderNotifPanel() {
   $('notifList').innerHTML = deduped.length
     ? deduped.map(n=>`
         <div class="notif-item ${!n.is_read?'unread':''}" onclick="markNotifRead('${n.id}')">
-          <div class="ni-title">${_e(n.title)}</div>
-          <div class="ni-sub">${_e(n.body||'')} · ${_ago(n.created_at)}</div>
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+            <div style="flex:1;min-width:0;">
+              <div class="ni-title">${_e(n.title)}</div>
+              <div class="ni-sub">${_e(n.body||'')} · ${_ago(n.created_at)}</div>
+            </div>
+            <button onclick="event.stopPropagation();deleteNotif('${n.id}')" style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:14px;padding:0 2px;flex-shrink:0;line-height:1;" title="مسح الإشعار">×</button>
+          </div>
         </div>`).join('')
     : `<div class="empty-state" style="padding:24px;"><p>لا توجد إشعارات</p></div>`;
 }
@@ -1891,6 +1896,17 @@ async function markNotifRead(id) {
   }).catch(()=>{});
 }
 
+async function deleteNotif(id) {
+  S.notifs = S.notifs.filter(n=>n.id!==id);
+  renderNotifPanel();
+  // مسح من DB
+  await sbFetch(`/notifications?id=eq.${id}`, {
+    method:'DELETE',
+    headers:{'Prefer':'return=minimal'}
+  }).catch(()=>{});
+}
+
+
 async function markAllNotifRead() {
   S.notifs.forEach(n=>n.is_read=true);
   renderNotifPanel();
@@ -1898,6 +1914,16 @@ async function markAllNotifRead() {
   await fetch(CFG.authEndpoint,{
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:'mark_notif_read',user_id:S.user.id})
+  }).catch(()=>{});
+}
+
+async function deleteAllNotifs() {
+  if (!S.user || !S.notifs.length) return;
+  S.notifs = [];
+  renderNotifPanel();
+  await sbFetch(`/notifications?user_id=eq.${S.user.id}`, {
+    method:'DELETE',
+    headers:{'Prefer':'return=minimal'}
   }).catch(()=>{});
 }
 
