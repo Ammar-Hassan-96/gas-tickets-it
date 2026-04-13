@@ -1407,49 +1407,49 @@ function renderReports() {
   if (_resetBtn) _resetBtn.style.display = isManager ? '' : 'none';
 
   // ── Stats row ──────────────────────────────────────────
-  const statsHtml =
-    '<div class="stats-row" style="margin-bottom:16px;">' +
-    [
-      ['معدل الحل',       total?resRate+'%':'—', 'من إجمالي التيكتات', '#4ADE80'],
-      ['إجمالي التيكتات', total,                 'منذ البداية',         '#60A5FA'],
-      ['قيد الانتظار',    open,                  'تحتاج إجراء',         '#FCD34D'],
-      ['حرجة',            crit,                  'أولوية قصوى',          '#F87171'],
-    ].map(([l,v,h,c]) =>
-      '<div class="stat-card" style="--_acc:' + c + '">' +
-        '<div class="stat-label">' + l + '</div>' +
-        '<div class="stat-val" style="color:' + c + '">' + v + '</div>' +
-        '<div class="stat-hint">' + h + '</div>' +
-      '</div>'
-    ).join('') +
-    '</div>';
+  const statsHtml = `
+    <div class="stats-row" style="margin-bottom:16px;">
+      ${[
+        ['معدل الحل',       total?resRate+'%':'—', 'من إجمالي التيكتات', '#4ADE80'],
+        ['إجمالي التيكتات', total,                 'منذ البداية',         '#60A5FA'],
+        ['قيد الانتظار',    open,                  'تحتاج إجراء',         '#FCD34D'],
+        ['حرجة',            crit,                  'أولوية قصوى',          '#F87171'],
+      ].map(([l,v,h,c])=>`
+        <div class="stat-card" style="--_acc:${c}">
+          <div class="stat-label">${l}</div>
+          <div class="stat-val" style="color:${c}">${v}</div>
+          <div class="stat-hint">${h}</div>
+        </div>`).join('')}
+    </div>
 
-  // مقارنة الأشهر — للمدير فقط
-  let monthHtml = '';
-  if (isManager) {
-    const monthRows = [
-      ['إجمالي التيكتات', thisMTotal, lastMTotal],
-      ['محلولة', thisMonth.filter(t=>['resolved','closed'].includes(t.status)).length, lastMonth.filter(t=>['resolved','closed'].includes(t.status)).length],
-      ['حرجة',   thisMonth.filter(t=>t.priority==='critical').length, lastMonth.filter(t=>t.priority==='critical').length],
-      ['مفتوحة', thisMonth.filter(t=>t.status==='open').length, lastMonth.filter(t=>t.status==='open').length],
-    ].map(([label,curr,prev]) => {
-      const diff  = curr - prev;
-      const color = diff>0 ? '#F87171' : diff<0 ? '#4ADE80' : 'var(--text-muted)';
-      const arrow = diff>0 ? '↑' : diff<0 ? '↓' : '—';
-      return '<tr><td style="font-weight:500;">' + label + '</td>' +
-             '<td style="font-family:var(--font-mono);font-weight:600;">' + curr + '</td>' +
-             '<td style="font-family:var(--font-mono);color:var(--text-muted);">' + prev + '</td>' +
-             '<td style="font-family:var(--font-mono);color:' + color + ';font-weight:600;">' + arrow + ' ' + Math.abs(diff) + '</td></tr>';
-    }).join('');
-    monthHtml = '<div class="tbl-wrap" style="margin-bottom:20px;">' +
-      '<div class="tbl-head">' +
-        '<span class="tbl-head-title">مقارنة الأشهر</span>' +
-        '<span style="font-size:12px;color:var(--text-muted);">' + now.toLocaleDateString('ar-EG',{month:'long',year:'numeric'}) + '</span>' +
-      '</div>' +
-      '<table class="data-tbl">' +
-        '<thead><tr><th></th><th>الشهر الحالي</th><th>الشهر الماضي</th><th>الفرق</th></tr></thead>' +
-        '<tbody>' + monthRows + '</tbody>' +
-      '</table></div>';
-  }
+    <!-- مقارنة الشهرين -->
+    <div class="tbl-wrap" style="margin-bottom:20px;">
+      <div class="tbl-head">
+        <span class="tbl-head-title">مقارنة الأشهر</span>
+        <span style="font-size:12px;color:var(--text-muted);">${now.toLocaleDateString('ar-EG',{month:'long',year:'numeric'})}</span>
+      </div>
+      <table class="data-tbl">
+        <thead><tr><th></th><th>الشهر الحالي</th><th>الشهر الماضي</th><th>الفرق</th></tr></thead>
+        <tbody>
+          ${[
+            ['إجمالي التيكتات', thisMTotal, lastMTotal],
+            ['محلولة', thisMonth.filter(t=>['resolved','closed'].includes(t.status)).length, lastMonth.filter(t=>['resolved','closed'].includes(t.status)).length],
+            ['حرجة',   thisMonth.filter(t=>t.priority==='critical').length, lastMonth.filter(t=>t.priority==='critical').length],
+            ['مفتوحة', thisMonth.filter(t=>t.status==='open').length, lastMonth.filter(t=>t.status==='open').length],
+          ].map(([label,curr,prev])=>{
+            const diff=curr-prev;
+            const color=diff>0?'#F87171':diff<0?'#4ADE80':'var(--text-muted)';
+            const arrow=diff>0?'↑':diff<0?'↓':'—';
+            return `<tr>
+              <td style="font-weight:500;">${label}</td>
+              <td style="font-family:var(--font-mono);font-weight:600;">${curr}</td>
+              <td style="font-family:var(--font-mono);color:var(--text-muted);">${prev}</td>
+              <td style="font-family:var(--font-mono);color:${color};font-weight:600;">${arrow} ${Math.abs(diff)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`;
 
   // ── Admin view ─────────────────────────────────────────
   if (!isManager) {
@@ -1504,7 +1504,7 @@ function renderReports() {
     rate: 0
   })).map(p=>({...p, rate:p.asgn?Math.round(p.done/p.asgn*100):0}));
 
-  $('reportsContent').innerHTML = statsHtml + monthHtml + `
+  $('reportsContent').innerHTML = statsHtml + `
     <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
       <button class="btn btn-ghost" onclick="exportExcel()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
@@ -1544,6 +1544,93 @@ function renderReports() {
       </table>
     </div>`;
 }
+
+  // ── Admin: only sees their own performance ───────────
+  if (!isManager) {
+    const myAssigned = tickets.filter(t=>t.assigned_to===S.user.id).length;
+    const myDone     = tickets.filter(t=>t.assigned_to===S.user.id&&['resolved','closed'].includes(t.status)).length;
+    const myOpen     = tickets.filter(t=>t.assigned_to===S.user.id&&['open','assigned','in_progress'].includes(t.status)).length;
+    const myRate     = myAssigned?Math.round(myDone/myAssigned*100):0;
+
+    $('reportsContent').innerHTML = statsHtml + `
+      <div class="tbl-wrap" style="margin-bottom:20px;">
+        <div class="tbl-head"><span class="tbl-head-title">أدائي الشخصي</span></div>
+        <table class="data-tbl">
+          <thead><tr><th>معين لي</th><th>محلولة</th><th>قيد التنفيذ</th><th>معدل الحل</th><th>الأداء</th></tr></thead>
+          <tbody><tr>
+            <td><strong>${myAssigned}</strong></td>
+            <td style="color:#4ADE80;">${myDone}</td>
+            <td style="color:#FCD34D;">${myOpen}</td>
+            <td style="font-family:var(--font-mono);">${myRate}%</td>
+            <td style="min-width:160px;">
+              <div class="sla-bar" style="height:8px;">
+                <div class="sla-fill ${myRate>=80?'sla-ok':myRate>=50?'sla-warn':'sla-crit'}" style="width:${myRate}%"></div>
+              </div>
+              <div style="font-size:10px;color:var(--text-muted);margin-top:3px;">${myRate>=80?'ممتاز 🌟':myRate>=50?'جيد':'يحتاج تحسين'}</div>
+            </td>
+          </tr></tbody>
+        </table>
+      </div>
+      <div class="tbl-wrap">
+        <div class="tbl-head"><span class="tbl-head-title">توزيع تيكتاتي حسب الفئة</span></div>
+        <table class="data-tbl">
+          <thead><tr><th>الفئة</th><th>إجمالي</th><th>مفتوح</th><th>محلول</th></tr></thead>
+          <tbody>${Object.entries(CAT_L).map(([k,v])=>{
+            const cat=tickets.filter(t=>t.assigned_to===S.user.id&&t.category===k);
+            if(!cat.length) return '';
+            return `<tr>
+              <td>${v}</td><td>${cat.length}</td>
+              <td>${cat.filter(t=>['open','assigned','in_progress'].includes(t.status)).length}</td>
+              <td>${cat.filter(t=>['resolved','closed'].includes(t.status)).length}</td>
+            </tr>`;
+          }).join('')||'<tr><td colspan="4"><div class="empty-state"><p>لا توجد تيكتات معينة لك</p></div></td></tr>'}
+          </tbody>
+        </table>
+      </div>`;
+    return;
+  }
+
+  // ── Manager: sees full team performance ──────────────
+  const itUsers = S.users.filter(u=>u.role==='admin');
+  const perf = itUsers.map(u=>{
+    const asgn= tickets.filter(t=>t.assigned_to===u.id).length;
+    const done= tickets.filter(t=>t.assigned_to===u.id&&['resolved','closed'].includes(t.status)).length;
+    return {name:u.name, asgn, done, rate:asgn?Math.round(done/asgn*100):0};
+  });
+
+  $('reportsContent').innerHTML = statsHtml + `
+    <div class="tbl-wrap" style="margin-bottom:20px;">
+      <div class="tbl-head"><span class="tbl-head-title">أداء فريق IT</span></div>
+      <table class="data-tbl">
+        <thead><tr><th>الفني</th><th>معين له</th><th>محلولة</th><th>معدل الحل</th><th>الأداء</th></tr></thead>
+        <tbody>${perf.length?perf.map(p=>`<tr>
+          <td><strong>${_e(p.name)}</strong></td>
+          <td>${p.asgn}</td><td>${p.done}</td>
+          <td style="font-family:var(--font-mono);">${p.rate}%</td>
+          <td style="min-width:140px;">
+            <div class="sla-bar" style="height:7px;">
+              <div class="sla-fill ${p.rate>=80?'sla-ok':p.rate>=50?'sla-warn':'sla-crit'}" style="width:${p.rate}%"></div>
+            </div>
+          </td>
+        </tr>`).join(''):'<tr><td colspan="5"><div class="empty-state"><p>لا يوجد فريق IT</p></div></td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    <div class="tbl-wrap">
+      <div class="tbl-head"><span class="tbl-head-title">التوزيع حسب الفئة</span></div>
+      <table class="data-tbl">
+        <thead><tr><th>الفئة</th><th>إجمالي</th><th>مفتوح</th><th>محلول</th></tr></thead>
+        <tbody>${Object.entries(CAT_L).map(([k,v])=>{
+          const cat=tickets.filter(t=>t.category===k);
+          if(!cat.length) return '';
+          return `<tr>
+            <td>${v}</td><td>${cat.length}</td>
+            <td>${cat.filter(t=>['open','assigned'].includes(t.status)).length}</td>
+            <td>${cat.filter(t=>['resolved','closed'].includes(t.status)).length}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>`;
 }
 
 async function confirmResetStats() {
