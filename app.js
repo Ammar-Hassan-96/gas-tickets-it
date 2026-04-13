@@ -248,6 +248,7 @@ function doLogout() {
   // Stop heartbeat and SLA check
   if (S._heartbeat) { clearInterval(S._heartbeat); S._heartbeat = null; }
   if (S._slaCheck)  { clearInterval(S._slaCheck);  S._slaCheck  = null; }
+  if (S._polling)   { clearInterval(S._polling);   S._polling   = null; }
   // Invalidate session on server (fire-and-forget)
   if (S.token) {
     fetch(CFG.authEndpoint, {
@@ -293,6 +294,32 @@ async function bootApp() {
   if (S._slaCheck) clearInterval(S._slaCheck);
   checkSLAAlerts();
   S._slaCheck = setInterval(checkSLAAlerts, 30 * 60 * 1000);
+
+  // Real-time polling — كل 30 ثانية بيجيب أحدث البيانات
+  if (S._polling) clearInterval(S._polling);
+  S._polling = setInterval(async () => {
+    if (!S.token) return;
+    const prevTicketCount  = S.tickets.length;
+    const prevNotifUnread  = S.notifs.filter(n=>!n.is_read).length;
+
+    await Promise.all([loadTickets(), loadNotifications()]);
+
+    refreshNavCounts();
+
+    // لو في تيكتات جديدة وصلت — حدّث الصفحة الحالية
+    if (S.tickets.length !== prevTicketCount) {
+      if (S.page === 'dashboard')   renderDashboard();
+      if (S.page === 'mytickets')   renderMyTickets();
+      if (S.page === 'alltickets')  renderAllTickets();
+      if (S.page === 'archive')     renderArchive();
+      if (S.page === 'reports')     renderReports();
+    }
+
+    // لو في إشعارات جديدة — حدّث الـ panel (الصوت في renderNotifPanel)
+    if (S.notifs.filter(n=>!n.is_read).length !== prevNotifUnread) {
+      renderNotifPanel();
+    }
+  }, 30 * 1000);
 }
 
 function checkSLAAlerts() {
@@ -425,6 +452,8 @@ function showPage(id) {
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
   const pg = $(`page-${id}`);
   if (pg) pg.classList.add('on');
+
+  refreshNavCounts();
 
   const renders = {
     dashboard: renderDashboard,
