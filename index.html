@@ -1010,8 +1010,8 @@ body {
           </g>
         </svg>
       </div>
-      <div class="brand-title">GAS Internal Tickets</div>
-      <div class="brand-sub">German Auto Service</div>
+      <div class="brand-title">GAS IT Desk</div>
+      <div class="brand-sub">German Auto Service · Mercedes-Benz Egypt</div>
       <div class="brand-line"></div>
     </div>
 
@@ -1200,6 +1200,49 @@ body {
             <table class="data-tbl"><thead><tr>
               <th>الرقم</th><th>العنوان</th><th>مقدم الطلب</th><th>الإدارة المستهدفة</th><th>نوع الطلب</th><th>الأولوية</th><th>الحالة</th><th>المعين</th><th>SLA</th><th>إجراء</th>
             </tr></thead><tbody id="allTbody"></tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <!-- OUTBOUND TICKETS — طلبات فريقي الصادرة لإدارات أخرى -->
+      <div class="page" id="page-outbound">
+        <div class="ph">
+          <div class="ph-left">
+            <span class="ph-tag">📤 متابعة الفريق</span>
+            <h1 class="ph-title">طلبات فريقي الصادرة</h1>
+            <p class="ph-sub">الطلبات التي بعثها موظفو إدارتك إلى إدارات أخرى — للعرض والمتابعة</p>
+          </div>
+        </div>
+        <div id="outboundStats"></div>
+        <div class="tbl-wrap">
+          <div class="tbl-head">
+            <span class="tbl-head-title">الطلبات الصادرة</span>
+            <div class="tbl-filters">
+              <input class="s-input" placeholder="بحث..." oninput="filterOutboundSearch(this.value)">
+              <select class="s-select" id="ob_dept" onchange="filterOutbound('dept',this.value)">
+                <option value="">كل الإدارات المستلمة</option>
+              </select>
+              <select class="s-select" onchange="filterOutbound('status',this.value)">
+                <option value="">كل الحالات</option>
+                <option value="open">مفتوح</option>
+                <option value="assigned">معين</option>
+                <option value="in_progress">قيد التنفيذ</option>
+                <option value="resolved">محلول</option>
+                <option value="closed">مغلق</option>
+              </select>
+              <select class="s-select" onchange="filterOutbound('priority',this.value)">
+                <option value="">كل الأولويات</option>
+                <option value="critical">حرجة</option>
+                <option value="high">عالية</option>
+                <option value="medium">متوسطة</option>
+                <option value="low">منخفضة</option>
+              </select>
+            </div>
+          </div>
+          <div style="overflow-x:auto;">
+            <table class="data-tbl"><thead><tr>
+              <th>الرقم</th><th>العنوان</th><th>مقدم الطلب</th><th>الإدارة المستهدفة</th><th>نوع الطلب</th><th>الأولوية</th><th>الحالة</th><th>المعين</th><th>التاريخ</th>
+            </tr></thead><tbody id="outboundTbody"></tbody></table>
           </div>
         </div>
       </div>

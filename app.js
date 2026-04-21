@@ -98,44 +98,78 @@ const Perm = {
   // الإدارة اللي المستخدم بيتبعها (مع trim وحماية)
   myDept: () => (S.user?.department || '').trim(),
 
-  // هل ده مستخدم تابع لنفس إدارة الطلب المستهدفة؟ (مقارنة آمنة)
+  // هل ده مستخدم تابع لنفس إدارة الطلب المستهدفة؟ (Inbound — الطلب جاي لإدارته)
   sameDeptAs: (t) => {
     const mine = Perm.myDept();
     const target = (t?.target_department || '').trim();
     if (!mine || !target) return false;
-    // مقارنة case-insensitive كمان عشان الأمان (CRM vs crm)
     return mine === target || mine.toLowerCase() === target.toLowerCase();
   },
 
+  // هل مقدم الطلب من نفس إدارة المستخدم؟ (Outbound — الطلب صادر من إدارته)
+  // مفيد للمدير/المشرف عشان يتابع طلبات موظفيه الصادرة
+  ownerFromMyDept: (t) => {
+    if (!t?.created_by) return false;
+    const owner = S.users?.find(u => u.id === t.created_by);
+    if (!owner) return false;
+    const mine = Perm.myDept();
+    const ownerDept = (owner.department || '').trim();
+    if (!mine || !ownerDept) return false;
+    return mine === ownerDept || mine.toLowerCase() === ownerDept.toLowerCase();
+  },
+
+  // هل الطلب outbound بالنسبة للمستخدم الحالي؟
+  // أي: مقدمه من إدارتي + موجه لإدارة تانية
+  isOutbound: (t) => {
+    if (!t) return false;
+    if (Perm.sameDeptAs(t)) return false;  // inbound
+    if (t.created_by === S.user.id) return false;  // طلبي الشخصي
+    return Perm.ownerFromMyDept(t);
+  },
+
   // ── رؤية الطلبات ──
-  // هل المستخدم يقدر يشوف تفاصيل التيكت ده؟
   canSeeTicket: (t) => {
     if (!t) return false;
     // super_admin يشوف كل حاجة
     if (Perm.isSuper()) return true;
-    // صاحب الطلب دايماً يشوفه (شفافية كاملة لمقدم الطلب)
+    // صاحب الطلب دايماً يشوفه
     if (t.created_by === S.user.id) return true;
     // المعين عليه يشوفه
     if (t.assigned_to === S.user.id) return true;
-    // Legacy: التيكتات القديمة بدون target_department يشوفها كل الـ admins/managers/supervisors
+    // Legacy: التيكتات القديمة بدون target_department
     if (!t.target_department) {
       return Perm.isManager() || Perm.isSupervisor();
     }
-    // مدير/مشرف الإدارة المستهدفة يشوف كل طلباتها
+    // 📥 Inbound: قيادة الإدارة المستهدفة
     if (Perm.sameDeptAs(t) && Perm.isDeptLead()) return true;
-    // موظف في نفس الإدارة يشوف الطلبات المفتوحة (open) عشان يقدر يستلمها
+    // 📤 Outbound: قيادة الإدارة يشوفوا طلبات فريقهم الصادرة (متابعة)
+    if (Perm.isDeptLead() && Perm.ownerFromMyDept(t)) return true;
+    // موظف في نفس الإدارة المستهدفة يشوف الطلبات المفتوحة عشان يستلمها
     if (Perm.sameDeptAs(t) && Perm.isEmployee() && t.status === 'open') return true;
     return false;
   },
 
-  // هل يقدر يعدّل حالة التيكت / يرد عليه؟
+  // هل يقدر يعدّل حالة التيكت؟ (status / assign)
   canActOnTicket: (t) => {
     if (!t) return false;
     if (Perm.isSuper()) return true;
     // المعين عليه
     if (t.assigned_to === S.user.id) return true;
-    // قيادة الإدارة المستهدفة
+    // 📥 قيادة الإدارة المستهدفة (Inbound فقط)
     if (Perm.sameDeptAs(t) && Perm.isDeptLead()) return true;
+    // ملاحظة: المدير لطلبات Outbound ما يقدرش يحدث الحالة — بس يعلق
+    return false;
+  },
+
+  // هل يقدر يضيف تعليق؟ (أوسع من canActOnTicket)
+  // يشمل القيادات للطلبات Outbound كمان
+  canCommentOnTicket: (t) => {
+    if (!t) return false;
+    if (Perm.canActOnTicket(t)) return true;
+    // صاحب الطلب يقدر يعلق دايماً
+    if (t.created_by === S.user.id) return true;
+    // 📤 قيادة الإدارة ترد بتعليقات على طلبات فريقها الصادرة
+    if (Perm.isDeptLead() && Perm.ownerFromMyDept(t)) return true;
     return false;
   },
 
@@ -210,6 +244,7 @@ const Perm = {
         return true;
       // صفحات القيادات
       case 'alltickets':
+      case 'outbound':
       case 'reports':
         return Perm.isDeptLead() || Perm.isSuper();
       // صفحة المستخدمين: manager الإدارة + super_admin
@@ -231,6 +266,16 @@ const Perm = {
 // فلترة التيكتات المرئية للمستخدم الحالي
 function visibleTickets() {
   return (S.tickets || []).filter(t => Perm.canSeeTicket(t));
+}
+
+// الطلبات الواردة للإدارة (inbound — موجهة لإدارة المستخدم)
+function inboundTickets() {
+  return visibleTickets().filter(t => Perm.sameDeptAs(t));
+}
+
+// الطلبات الصادرة من فريق المستخدم لإدارات أخرى (outbound)
+function outboundTickets() {
+  return visibleTickets().filter(t => Perm.isOutbound(t));
 }
 
 // فلترة المستخدمين المرئيين للمستخدم الحالي
@@ -625,7 +670,8 @@ function buildNav() {
   const allItems = [
     ['dashboard',  '⊞',  'الرئيسية'],
     ['mytickets',  '🎫', 'طلباتي'],
-    ['alltickets', '📋', Perm.isSuper() ? 'كل الطلبات' : `طلبات ${Perm.myDept() || 'إدارتي'}`],
+    ['alltickets', '📥', Perm.isSuper() ? 'كل الطلبات' : `طلبات ${Perm.myDept() || 'إدارتي'}`],
+    ['outbound',   '📤', `طلبات فريقي الصادرة`],
     ['users',      '👥', 'المستخدمون'],
     ['reports',    '📊', 'التقارير'],
     ['roles',      '🔑', 'الأدوار'],
@@ -650,8 +696,15 @@ function getNavCount(pageId) {
     return S.tickets.filter(t=>t.created_by===S.user.id && ['open','assigned','in_progress'].includes(t.status)).length;
   }
   if (pageId === 'alltickets') {
-    // عدّاد الطلبات المرئية لي (مش المؤرشفة) اللي لسه مفتوحة
-    return visibleTickets().filter(t => ['open','assigned'].includes(t.status)).length;
+    // عدّاد الطلبات المرئية لي (الـ inbound — موجهة لإدارتي)
+    if (Perm.isSuper()) {
+      return visibleTickets().filter(t => ['open','assigned'].includes(t.status)).length;
+    }
+    return inboundTickets().filter(t => ['open','assigned'].includes(t.status)).length;
+  }
+  if (pageId === 'outbound') {
+    // عدّاد الطلبات الصادرة من فريقي (اللي لسه مش محلولة)
+    return outboundTickets().filter(t => !['resolved','closed','archived'].includes(t.status)).length;
   }
   if (pageId === 'archive') {
     return S.tickets.filter(t=>t.status==='archived').length;
@@ -660,7 +713,7 @@ function getNavCount(pageId) {
 }
 
 function refreshNavCounts() {
-  ['mytickets','alltickets','archive'].forEach(id=>{
+  ['mytickets','alltickets','outbound','archive'].forEach(id=>{
     const btn = $(`nav-${id}`);
     if (!btn) return;
     const count = getNavCount(id);
@@ -701,6 +754,7 @@ function showPage(id) {
     dashboard: renderDashboard,
     mytickets: renderMyTickets,
     alltickets: renderAllTickets,
+    outbound: renderOutboundTickets,
     users:    renderUsers,
     reports:  renderReports,
     auditlog: renderAuditLog,
@@ -1004,18 +1058,25 @@ function renderAllTickets() {
     }
   }
   // استثناء المؤرشفة + تطبيق فلتر الرؤية
-  renderTicketRows('allTbody', applyAllFilter(visibleTickets().filter(t=>t.status!=='archived')), true);
+  // للـ dept leads: بس الـ inbound (موجه لإدارتهم) — الـ outbound في تاب منفصل
+  // للـ super_admin: كل حاجة
+  const baseList = Perm.isSuper()
+    ? visibleTickets()
+    : inboundTickets();
+  renderTicketRows('allTbody', applyAllFilter(baseList.filter(t=>t.status!=='archived')), true);
 }
 function filterAllTickets(q) {
   S.allFilter.search = q;
-  renderTicketRows('allTbody', applyAllFilter(visibleTickets().filter(t=>t.status!=='archived')), true);
+  const baseList = Perm.isSuper() ? visibleTickets() : inboundTickets();
+  renderTicketRows('allTbody', applyAllFilter(baseList.filter(t=>t.status!=='archived')), true);
 }
 function filterAll(key, val) {
   if (key==='status')     S.allFilter.status     = val;
   if (key==='priority')   S.allFilter.priority   = val;
   if (key==='date')       S.allFilter.date       = val;
   if (key==='department') S.allFilter.department = val;
-  renderTicketRows('allTbody', applyAllFilter(visibleTickets().filter(t=>t.status!=='archived')), true);
+  const baseList = Perm.isSuper() ? visibleTickets() : inboundTickets();
+  renderTicketRows('allTbody', applyAllFilter(baseList.filter(t=>t.status!=='archived')), true);
 }
 function applyAllFilter(list) {
   let r = list;
@@ -1029,6 +1090,119 @@ function applyAllFilter(list) {
     if (ms) r = r.filter(t => now - new Date(t.created_at) <= ms);
   }
   return r;
+}
+
+// ═══════════════════════════════════════════════════════
+//  OUTBOUND TICKETS (طلبات فريقي الصادرة لإدارات أخرى)
+// ═══════════════════════════════════════════════════════
+function renderOutboundTickets() {
+  // Reset filters
+  S.outFilter = { status: '', priority: '', search: '', dept: '' };
+  const inputs = document.querySelectorAll('#page-outbound .s-input, #page-outbound .s-select');
+  inputs.forEach(el => { el.value = ''; });
+
+  const base = outboundTickets().filter(t => t.status !== 'archived');
+
+  // Build dept filter from actual destinations
+  const deptSel = $('ob_dept');
+  if (deptSel) {
+    const destDepts = [...new Set(base.map(t => t.target_department).filter(Boolean))].sort();
+    deptSel.innerHTML = `<option value="">كل الإدارات المستلمة</option>` +
+      destDepts.map(d => `<option value="${_e(d)}">${_e(d)}</option>`).join('');
+  }
+
+  // Summary card
+  const stats = $('outboundStats');
+  if (stats) {
+    const total = base.length;
+    const open = base.filter(t => ['open','assigned','in_progress'].includes(t.status)).length;
+    const done = base.filter(t => ['resolved','closed'].includes(t.status)).length;
+    const crit = base.filter(t => t.priority === 'critical' && !['resolved','closed'].includes(t.status)).length;
+    stats.innerHTML = `
+      <div class="stats-row" style="margin-bottom:16px;">
+        <div class="stat-card" style="--_acc:#60A5FA">
+          <div class="stat-label">إجمالي الصادرة</div>
+          <div class="stat-val" style="color:#60A5FA">${total}</div>
+          <div class="stat-hint">من فريق ${_e(Perm.myDept()||'—')}</div>
+        </div>
+        <div class="stat-card" style="--_acc:#FCD34D">
+          <div class="stat-label">قيد المعالجة</div>
+          <div class="stat-val" style="color:#FCD34D">${open}</div>
+          <div class="stat-hint">لم تُحل بعد</div>
+        </div>
+        <div class="stat-card" style="--_acc:#4ADE80">
+          <div class="stat-label">محلولة</div>
+          <div class="stat-val" style="color:#4ADE80">${done}</div>
+          <div class="stat-hint">مكتملة</div>
+        </div>
+        <div class="stat-card" style="--_acc:#F87171">
+          <div class="stat-label">حرجة معلقة</div>
+          <div class="stat-val" style="color:#F87171">${crit}</div>
+          <div class="stat-hint">تحتاج متابعة</div>
+        </div>
+      </div>`;
+  }
+
+  renderOutboundRows(applyOutFilter(base));
+}
+
+function filterOutbound(key, val) {
+  if (!S.outFilter) S.outFilter = { status: '', priority: '', search: '', dept: '' };
+  S.outFilter[key] = val;
+  const base = outboundTickets().filter(t => t.status !== 'archived');
+  renderOutboundRows(applyOutFilter(base));
+}
+function filterOutboundSearch(q) { filterOutbound('search', q); }
+
+function applyOutFilter(list) {
+  let r = list;
+  const f = S.outFilter || {};
+  if (f.status)   r = r.filter(t => t.status === f.status);
+  if (f.priority) r = r.filter(t => t.priority === f.priority);
+  if (f.dept)     r = r.filter(t => (t.target_department||'') === f.dept);
+  if (f.search) {
+    const q = f.search.toLowerCase();
+    r = r.filter(t =>
+      (t.title||'').toLowerCase().includes(q) ||
+      (t.ticket_number||'').toLowerCase().includes(q) ||
+      (uname(t.created_by)||'').toLowerCase().includes(q)
+    );
+  }
+  return r;
+}
+
+function renderOutboundRows(tickets) {
+  const tbody = $('outboundTbody');
+  if (!tbody) return;
+  if (!tickets.length) {
+    tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+      <p>لا توجد طلبات صادرة من فريقك لإدارات أخرى</p>
+    </div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = tickets.map(t => {
+    const sla = getSLA(t);
+    const targetDept = `<span class="dept-chip">${_e(t.target_department||'—')}</span>`;
+    const reqType = t.request_type
+      ? `<span class="reqtype-chip">${_e(t.request_type)}</span>`
+      : '<span style="color:var(--text-muted);">—</span>';
+    const attachTag = (t.attachments && t.attachments.length)
+      ? `<span style="font-size:10px;color:var(--gold);margin-inline-start:6px;">📎 ${t.attachments.length}</span>` : '';
+    return `<tr onclick="openTicketDetail('${t.id}')">
+      <td><span class="tnum">${_e(t.ticket_number)}</span></td>
+      <td style="max-width:200px;">
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}${attachTag}</div>
+      </td>
+      <td><strong>${_e(uname(t.created_by))}</strong></td>
+      <td>${targetDept}</td>
+      <td>${reqType}</td>
+      <td>${pbadge(t.priority)}</td>
+      <td>${sbadge(t.status)}</td>
+      <td>${_e(t.assigned_to ? uname(t.assigned_to) : 'غير معين')}</td>
+      <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
+    </tr>`;
+  }).join('');
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1172,9 +1346,21 @@ async function openTicketDetail(id) {
   $('detailNum').textContent   = t.ticket_number;
   $('detailTitle').textContent = t.title;
 
+  const isOutbound = Perm.isDeptLead() && Perm.isOutbound(t);
   const canUpdate = Perm.canActOnTicket(t);
   const canDelete = Perm.canDeleteTicket(t);
   const canAssign = Perm.canAssignTicket(t) && t.assigned_to !== S.user.id && !['resolved','closed'].includes(t.status);
+
+  // Banner للطلبات الصادرة (تحذير للمدير إنه في وضع "متابعة" فقط)
+  const outboundBanner = isOutbound
+    ? `<div style="background:rgba(96,165,250,0.12);border:1px solid #60A5FA;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#60A5FA;display:flex;align-items:center;gap:10px;">
+        📤 <div>
+          <strong>طلب صادر من فريقك</strong> · مقدم الطلب: ${_e(uname(t.created_by))} من إدارة ${_e(Perm.myDept())}
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">يمكنك المتابعة والرد بتعليقات · تحديث الحالة يتم من إدارة <strong>${_e(t.target_department||'—')}</strong></div>
+        </div>
+      </div>`
+    : '';
+
   $('detailBtns').innerHTML = `
     ${canAssign?`<button class="btn btn-ghost" onclick="assignToMe('${id}')" style="border-color:var(--gold);color:var(--gold);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>تعيين لي</button>`:''}
     ${canUpdate?`<button class="btn btn-ghost" onclick="quickUpdate('${id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>تحديث الحالة</button>`:''}
@@ -1190,6 +1376,7 @@ async function openTicketDetail(id) {
   ];
 
   $('detailGrid').innerHTML = `
+    <div style="grid-column:1/-1;">${outboundBanner}</div>
     <div>
       <div class="dc">
         <div class="dc-title">سجل التيكت</div>
@@ -1209,11 +1396,15 @@ async function openTicketDetail(id) {
         </div>
       </div>
 
+      ${Perm.canCommentOnTicket(t) ? `
       <div class="comment-wrap">
-        <div class="dc-title" style="margin-bottom:10px;">إضافة تعليق</div>
+        <div class="dc-title" style="margin-bottom:10px;">
+          إضافة تعليق
+          ${isOutbound ? '<span style="font-size:11px;color:var(--text-muted);font-weight:400;margin-inline-start:8px;">· وضع المتابعة — رد فقط</span>' : ''}
+        </div>
         <textarea class="comment-input" id="newCommentInput" placeholder="أضف تعليقاً أو تحديثاً..."></textarea>
         <button class="btn btn-gold" onclick="addComment('${id}')">إرسال</button>
-      </div>
+      </div>` : ''}
     </div>
 
     <div>
@@ -1281,6 +1472,12 @@ function quickUpdate(ticketId) {
   S.selTicket = ticketId;
   const t = S.tickets.find(t=>t.id===ticketId);
   if (!t) return;
+
+  // Guard: ما يسمحش للطلبات الـ outbound (canActOnTicket بتمنع تحديث الحالة)
+  if (!Perm.canActOnTicket(t)) {
+    toast('لا يمكنك تحديث حالة هذا الطلب — فقط إدارته الأصلية تستطيع ذلك','error');
+    return;
+  }
 
   $('upd_status').value = t.status;
   $('upd_note').value   = '';
@@ -1395,6 +1592,12 @@ async function addComment(ticketId) {
   if (!text) return;
   const t = S.tickets.find(t=>t.id===ticketId);
   if (!t) return;
+
+  // Guard: تأكد إن عنده صلاحية التعليق (يشمل القيادات للـ outbound)
+  if (!Perm.canCommentOnTicket(t)) {
+    toast('ليس لديك صلاحية التعليق على هذا الطلب','error');
+    return;
+  }
 
   try {
     const comment = { ticket_id:ticketId, user_id:S.user.id, content:text, author_name:S.user.name };
