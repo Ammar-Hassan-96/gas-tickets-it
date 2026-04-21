@@ -110,14 +110,17 @@ const Perm = {
 canSeeTicket: (t) => {
   if (!t) return false;
 
+  // 🔧 حل مشكلة اختلاف النوع (string / number)
+  const userId = String(S.user?.id || '');
+
   // ✅ super_admin يشوف كل حاجة
   if (Perm.isSuper()) return true;
 
   // ✅ صاحب الطلب يشوفه
-  if (t.created_by === S.user.id) return true;
+  if (String(t.created_by || '') === userId) return true;
 
   // ✅ المعين عليه يشوفه
-  if (t.assigned_to === S.user.id) return true;
+  if (String(t.assigned_to || '') === userId) return true;
 
   // ✅ التيكتات القديمة بدون إدارة
   if (!t.target_department) {
@@ -132,7 +135,6 @@ canSeeTicket: (t) => {
 
   return false;
 },
-
   // هل يقدر يعدّل حالة التيكت / يرد عليه؟
   canActOnTicket: (t) => {
     if (!t) return false;
