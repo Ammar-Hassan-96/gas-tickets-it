@@ -164,21 +164,60 @@ const Perm = {
     return false;
   },
 
+  // هل يقدر يحذف هذا المستخدم؟
+  // super_admin: أي حد غير ammar.admin
+  // manager: بس موظف/مشرف في نفس إدارته
+  canDeleteUser: (u) => {
+    if (!u) return false;
+    if (u.username === 'ammar.admin') return false;  // محمي نهائياً
+    if (u.id === S.user?.id) return false;            // ما تقدرش تحذف نفسك
+    if (Perm.isSuper()) return true;
+    if (Perm.isManager() &&
+        (u.department||'').trim() === Perm.myDept() &&
+        (u.role === 'employee' || u.role === 'supervisor')) {
+      return true;
+    }
+    return false;
+  },
+
+  // هل يقدر يعيد تعيين كلمة مرور لهذا المستخدم؟ (نفس قواعد canDeleteUser تقريباً)
+  canResetUserPassword: (u) => {
+    if (!u) return false;
+    if (u.username === 'ammar.admin' && S.user.username !== 'ammar.admin') return false;
+    if (Perm.isSuper()) return true;
+    if (Perm.isManager() &&
+        (u.department||'').trim() === Perm.myDept() &&
+        (u.role === 'employee' || u.role === 'supervisor')) {
+      return true;
+    }
+    return false;
+  },
+
   // ── الصفحات المسموح بها ──
   canSeePage: (page) => {
     switch (page) {
-      case 'dashboard':  return true;
-      case 'mytickets':  return true;
-      case 'profile':    return true;
-      case 'detail':     return true;
-      case 'alltickets': return Perm.isDeptLead() || Perm.isSuper();
-      case 'reports':    return Perm.isDeptLead() || Perm.isSuper();
-      case 'users':      return Perm.isManager() || Perm.isSuper();
-      case 'roles':      return Perm.isSuper();  // صفحة تعيين الأدوار — super_admin فقط
-      case 'deptmap':    return Perm.isSuper();
-      case 'archive':    return Perm.isSuper();
-      case 'auditlog':   return Perm.isSuper();
-      default: return false;
+      // صفحات متاحة لكل المستخدمين
+      case 'dashboard':
+      case 'mytickets':
+      case 'profile':
+      case 'detail':        // صفحة تفاصيل تيكت — الحماية على مستوى التيكت نفسه (canSeeTicket)
+        return true;
+      // صفحات القيادات
+      case 'alltickets':
+      case 'reports':
+        return Perm.isDeptLead() || Perm.isSuper();
+      // صفحة المستخدمين: manager الإدارة + super_admin
+      case 'users':
+        return Perm.isManager() || Perm.isSuper();
+      // صفحات خاصة بالـ super_admin فقط
+      case 'roles':
+      case 'deptmap':
+      case 'archive':
+      case 'auditlog':
+        return Perm.isSuper();
+      default:
+        // أي صفحة غير معروفة — نسمح بيها ونعتمد على الحماية الداخلية
+        return true;
     }
   },
 };
@@ -675,19 +714,19 @@ function goBack() { showPage(S.prevPage || 'dashboard'); }
 //  DASHBOARD
 // ═══════════════════════════════════════════════════════
 function myTickets() {
-  return S.user.role === 'employee'
-    ? S.tickets.filter(t=>t.created_by===S.user.id)
-    : S.tickets;
+  // الموظف العادي: بس طلباته اللي قدمها
+  if (Perm.isEmployee()) return S.tickets.filter(t => t.created_by === S.user.id);
+  // القيادات وال super_admin: كل اللي يشوفوه (استناداً على الـ visibility rules)
+  return visibleTickets();
 }
 
 function renderDashboard() {
   const u = S.user;
   $('dashSub').textContent = `مرحباً ${u.name} — ${new Date().toLocaleDateString('ar-EG',{weekday:'long',day:'numeric',month:'long'})}`;
 
-  // Actions
-  $('dashActions').innerHTML = u.role === 'employee'
-    ? `<button class="btn btn-gold" onclick="openNewTicketModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>تيكت جديد</button>`
-    : '';
+  // Actions — كل المستخدمين يقدروا يفتحوا طلب جديد (مش بس الموظف)
+  $('dashActions').innerHTML =
+    `<button class="btn btn-gold" onclick="openNewTicketModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>طلب جديد</button>`;
 
   const tickets = myTickets();
   const open    = tickets.filter(t=>t.status==='open').length;
@@ -712,8 +751,8 @@ function renderDashboard() {
 
   renderDashCharts(tickets);
 
-  // Manager: load active sessions asynchronously (non-blocking)
-  if (S.user.role === 'manager') {
+  // Super Admin + Managers: load active sessions asynchronously (non-blocking)
+  if (Perm.isSuper() || Perm.isManager()) {
     fetch(CFG.authEndpoint, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ action:'get_sessions', token:S.token })
@@ -885,6 +924,20 @@ function renderAllTickets() {
   S.allFilter = { status: '', priority: '', search: '', date: '', department: '' };
   const inputs = document.querySelectorAll('#page-alltickets .s-input, #page-alltickets .s-select');
   inputs.forEach(el => { el.value = ''; });
+
+  // تنبيه للـ dept-lead لو مش متعين له إدارة (مشكلة شائعة بعد الـ migration)
+  const banner = $('allTicketsBanner');
+  if (banner) {
+    if (!Perm.isSuper() && Perm.isDeptLead() && !Perm.myDept()) {
+      banner.innerHTML = `
+        <div style="background:rgba(251,191,36,0.12);border:1px solid var(--warning);border-radius:8px;padding:12px 16px;margin-bottom:12px;font-size:13px;color:var(--warning);">
+          ⚠️ حسابك غير مرتبط بأي إدارة. يرجى التواصل مع مدير النظام لتحديد إدارتك من صفحة "الأدوار".
+        </div>`;
+    } else {
+      banner.innerHTML = '';
+    }
+  }
+
   // Populate department filter dropdown (super_admin only — غير كده الإدارة ثابتة)
   const deptSel = $('at_dept');
   if (deptSel) {
@@ -930,9 +983,12 @@ function applyAllFilter(list) {
 function renderTicketRows(tbodyId, tickets, isAdmin) {
   const tbody = $(tbodyId);
   if (!tickets.length) {
-    tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state">
+    tbody.innerHTML = `<tr><td colspan="10"><div class="empty-state">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M14 2H6a2 2 0 0 0-2 2v16h16V8z"/></svg>
-      <p>لا توجد تيكتات</p>
+      <p>لا توجد طلبات لعرضها</p>
+      ${!isAdmin && !Perm.isSuper() && Perm.isEmployee() && !Perm.myDept()
+        ? '<p style="color:var(--warning);font-size:12px;margin-top:8px;">⚠️ حسابك غير مرتبط بإدارة. تواصل مع مدير النظام.</p>'
+        : ''}
     </div></td></tr>`;
     return;
   }
@@ -940,20 +996,24 @@ function renderTicketRows(tbodyId, tickets, isAdmin) {
   if (isAdmin) {
     tbody.innerHTML = tickets.map(t=>{
       const sla = getSLA(t);
-      const canDel = S.user.role==='manager';
-      const deptTag = t.target_department
-        ? `<div style="font-size:10px;color:var(--gold);margin-top:2px;">🏢 ${_e(t.target_department)}${t.request_type?' · '+_e(t.request_type):''}</div>`
-        : '';
+      const canDel = Perm.canDeleteTicket(t);
+      const targetDept = t.target_department
+        ? `<span class="dept-chip">${_e(t.target_department)}</span>`
+        : `<span style="color:var(--text-muted);">${_e(CAT_L[t.category]||t.category||'—')}</span>`;
+      const reqType = t.request_type
+        ? `<span class="reqtype-chip">${_e(t.request_type)}</span>`
+        : '<span style="color:var(--text-muted);">—</span>';
       const attachTag = (t.attachments && t.attachments.length)
         ? `<span style="font-size:10px;color:var(--gold);margin-inline-start:6px;">📎 ${t.attachments.length}</span>` : '';
       return `<tr onclick="openTicketDetail('${t.id}')">
         <td><span class="tnum">${_e(t.ticket_number)}</span></td>
-        <td style="max-width:220px;">
+        <td style="max-width:200px;">
           <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}${attachTag}</div>
-          ${deptTag}
+          <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${_e(udept(t.created_by)||'—')}</div>
         </td>
         <td>${_e(uname(t.created_by))}</td>
-        <td>${_e(udept(t.created_by))}</td>
+        <td>${targetDept}</td>
+        <td>${reqType}</td>
         <td>${pbadge(t.priority)}</td>
         <td>${sbadge(t.status)}</td>
         <td>${_e(t.assigned_to ? uname(t.assigned_to) : '—')}</td>
@@ -962,8 +1022,8 @@ function renderTicketRows(tbodyId, tickets, isAdmin) {
           <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${sla.label}</div>
         </td>
         <td>
-          <div style="display:flex;gap:5px;">
-            <button class="btn btn-ghost" style="padding:4px 9px;font-size:11px;" onclick="event.stopPropagation();quickUpdate('${t.id}')">تحديث</button>
+          <div style="display:flex;gap:5px;flex-wrap:wrap;">
+            ${Perm.canActOnTicket(t)?`<button class="btn btn-ghost" style="padding:4px 9px;font-size:11px;" onclick="event.stopPropagation();quickUpdate('${t.id}')">تحديث</button>`:''}
             ${canDel?`<button class="btn btn-ghost" style="padding:4px 9px;font-size:11px;border-color:var(--warning);color:var(--warning);" onclick="event.stopPropagation();archiveTicket('${t.id}')">أرشفة</button>`:''}
           </div>
         </td>
@@ -974,17 +1034,24 @@ function renderTicketRows(tbodyId, tickets, isAdmin) {
       const deptCell = t.target_department
         ? `<span class="dept-chip">${_e(t.target_department)}</span>`
         : _e(CAT_L[t.category]||t.category||'—');
+      const reqTypeCell = t.request_type
+        ? `<span class="reqtype-chip">${_e(t.request_type)}</span>`
+        : '<span style="color:var(--text-muted);">—</span>';
+      const assignedCell = t.assigned_to
+        ? `<span style="font-size:12px;">${_e(uname(t.assigned_to))}</span>`
+        : '<span style="color:var(--text-muted);font-size:11px;">غير معين</span>';
       return `
       <tr onclick="openTicketDetail('${t.id}')">
         <td><span class="tnum">${_e(t.ticket_number)}</span></td>
         <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
           ${_e(t.title)}
-          ${t.request_type ? `<div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${_e(t.request_type)}</div>` : ''}
           ${(t.attachments && t.attachments.length) ? `<span style="font-size:10px;color:var(--gold);margin-inline-start:6px;">📎 ${t.attachments.length}</span>` : ''}
         </td>
         <td>${deptCell}</td>
+        <td>${reqTypeCell}</td>
         <td>${pbadge(t.priority)}</td>
         <td>${sbadge(t.status)}</td>
+        <td>${assignedCell}</td>
         <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
         <td><button class="btn btn-ghost" style="padding:4px 9px;font-size:11px;" onclick="event.stopPropagation();openTicketDetail('${t.id}')">تفاصيل</button></td>
       </tr>`;
@@ -1204,7 +1271,9 @@ async function saveTicketUpdate() {
   const newStatus     = $('upd_status').value;
   const note          = $('upd_note').value.trim();
   const assignedToVal = $('upd_assigned_to').value;
-  const newAssigned = S.user.role === 'manager'
+  // دلوقتي أي حد عنده صلاحية تعيين يقدر يعدل assigned_to (مش بس المدير القديم)
+  const canAssignNow = Perm.canAssignTicket(t);
+  const newAssigned = canAssignNow
     ? (assignedToVal || null)
     : (t.assigned_to || S.user.id);
 
@@ -1252,7 +1321,7 @@ async function saveTicketUpdate() {
       })}).catch(()=>{});
     }
 
-    const msg = (S.user.role === 'manager' && newAssigned !== prevAssigned && newAssigned)
+    const msg = (canAssignNow && newAssigned !== prevAssigned && newAssigned)
       ? `تم التحديث · معين لـ ${uname(newAssigned)}`
       : 'تم تحديث التيكت';
 
@@ -1280,8 +1349,8 @@ async function addComment(ticketId) {
     if (saved?.[0]) t.comments.push(saved[0]);
     else t.comments.push({...comment, id:'local'+Date.now(), created_at:new Date().toISOString()});
 
-    // إشعار صاحب التيكت لو المعلق مش هو نفسه
-    if (S.user.role !== 'employee' && t.created_by && t.created_by !== S.user.id) {
+    // إشعار صاحب التيكت لو المعلق مش هو نفسه (بغض النظر عن الدور)
+    if (t.created_by && t.created_by !== S.user.id) {
       sbFetch('/notifications', { method:'POST', body: JSON.stringify({
         user_id: t.created_by,
         title: `رد جديد على تيكتك: ${t.title}`,
@@ -1652,9 +1721,9 @@ function renderUsersGrid() {
           <span class="badge ${roleBadge}">${_e(ROLES[u.role]||u.role)}</span>
         </div>
         <div class="uc-actions">
-          ${canEdit ? `<button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;" onclick="editUser('${u.id}')">تعديل</button>` : ''}
-          ${canEdit ? `<button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;border-color:var(--warning);color:var(--warning);" onclick="resetUserPassword('${u.id}','${u.name.replace(/'/g,'&#39;')}')">🔑 تعيين كلمة مرور</button>` : ''}
-          ${Perm.isSuper() ? `<button class="btn btn-danger" style="font-size:11px;padding:5px 10px;" onclick="deleteUser('${u.id}')">حذف</button>` : ''}
+          ${Perm.canManageUser(u) ? `<button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;" onclick="editUser('${u.id}')">تعديل</button>` : ''}
+          ${Perm.canResetUserPassword(u) ? `<button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;border-color:var(--warning);color:var(--warning);" onclick="resetUserPassword('${u.id}','${u.name.replace(/'/g,'&#39;')}')">🔑 تعيين كلمة مرور</button>` : ''}
+          ${Perm.canDeleteUser(u) ? `<button class="btn btn-danger" style="font-size:11px;padding:5px 10px;" onclick="deleteUser('${u.id}')">حذف</button>` : ''}
         </div>
       </div>
     `;
