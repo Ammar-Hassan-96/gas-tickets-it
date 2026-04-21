@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GAS IT Desk — German Auto Service</title>
+<title>GAS Internal Tickets — German Auto Service</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='47' fill='none' stroke='%23B8975A' stroke-width='3'/><g fill='none' stroke='%23B8975A' stroke-width='3'><line x1='50' y1='8' x2='50' y2='32'/><line x1='50' y1='68' x2='50' y2='92'/><line x1='8' y1='50' x2='32' y2='50'/><line x1='68' y1='50' x2='92' y2='50'/><line x1='20' y1='20' x2='37' y2='37'/><line x1='63' y1='63' x2='80' y2='80'/><line x1='80' y1='20' x2='63' y2='37'/><line x1='37' y1='63' x2='20' y2='80'/><circle cx='50' cy='50' r='16' fill='rgba(184,151,90,0.2)' stroke-width='2'/><circle cx='50' cy='50' r='6' fill='%23B8975A'/></g></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Tajawal:wght@300;400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -752,6 +752,215 @@ body {
   .tb-names { display:none; }
   .tb-nav-btn { padding:6px 8px; font-size:11px; gap:4px; }
 }
+
+/* ═══════════════ ATTACHMENT ZONE ═══════════════ */
+.attach-zone{
+  border:2px dashed var(--border-gold);
+  border-radius:var(--radius-md);
+  padding:20px 16px;
+  text-align:center;
+  cursor:pointer;
+  transition:all .18s ease;
+  background:var(--bg-elevated);
+  display:flex;
+  align-items:center;
+  gap:14px;
+  justify-content:center;
+}
+.attach-zone:hover{
+  border-color:var(--gold);
+  background:var(--gold-glow);
+}
+.attach-zone.dragover{
+  border-color:var(--gold);
+  background:var(--gold-glow);
+  transform:scale(1.01);
+}
+.attach-zone-icon{
+  font-size:28px;
+  opacity:.8;
+}
+.attach-zone-text{
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  text-align:start;
+}
+.attach-zone-text strong{
+  color:var(--text-primary);
+  font-size:13px;
+  font-weight:600;
+}
+.attach-zone-text span{
+  color:var(--text-secondary);
+  font-size:11px;
+}
+.attach-zone-text small{
+  color:var(--text-muted);
+  font-size:10px;
+  margin-top:3px;
+}
+.attach-list{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  margin-top:10px;
+}
+.attach-item{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:8px 12px;
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  font-size:12px;
+}
+.attach-item-icon{
+  font-size:18px;
+  flex-shrink:0;
+}
+.attach-item-name{
+  flex:1;
+  color:var(--text-primary);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  min-width:0;
+}
+.attach-item-size{
+  color:var(--text-muted);
+  font-size:10px;
+  font-family:var(--font-mono);
+  flex-shrink:0;
+}
+.attach-item-remove{
+  background:transparent;
+  border:none;
+  color:var(--danger);
+  cursor:pointer;
+  padding:4px 8px;
+  border-radius:var(--radius-sm);
+  font-size:16px;
+  transition:all .15s;
+}
+.attach-item-remove:hover{
+  background:rgba(239,68,68,0.15);
+}
+.attach-item-link{
+  color:var(--gold);
+  text-decoration:none;
+  font-weight:500;
+}
+.attach-item-link:hover{
+  text-decoration:underline;
+}
+.attach-progress{
+  flex:1;
+  height:4px;
+  background:var(--bg-input);
+  border-radius:2px;
+  overflow:hidden;
+  margin:0 10px;
+}
+.attach-progress-fill{
+  height:100%;
+  background:var(--gold);
+  transition:width .2s ease;
+}
+
+/* ═══════════════ DEPT / TYPE BADGE ═══════════════ */
+.dept-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:3px 10px;
+  border-radius:999px;
+  background:var(--gold-glow);
+  color:var(--gold);
+  font-size:11px;
+  font-weight:600;
+  border:1px solid var(--border-gold);
+}
+.reqtype-chip{
+  display:inline-flex;
+  align-items:center;
+  padding:3px 10px;
+  border-radius:999px;
+  background:var(--bg-elevated);
+  color:var(--text-secondary);
+  font-size:11px;
+  border:1px solid var(--border);
+}
+
+/* ═══════════════ ADMIN MAP TABLE ═══════════════ */
+.map-grid{
+  display:grid;
+  grid-template-columns:1fr;
+  gap:16px;
+}
+.map-dept-card{
+  background:var(--bg-card);
+  border:1px solid var(--border);
+  border-radius:var(--radius-md);
+  padding:14px 16px;
+}
+.map-dept-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:12px;
+  padding-bottom:10px;
+  border-bottom:1px solid var(--border);
+}
+.map-dept-name{
+  font-weight:700;
+  color:var(--gold);
+  font-size:14px;
+}
+.map-types{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-bottom:10px;
+}
+.map-type-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:5px 10px;
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  font-size:12px;
+  color:var(--text-primary);
+}
+.map-type-chip button{
+  background:none;
+  border:none;
+  color:var(--danger);
+  cursor:pointer;
+  padding:0 2px;
+  font-size:14px;
+  line-height:1;
+}
+.map-add-row{
+  display:flex;
+  gap:8px;
+  align-items:center;
+}
+.map-add-row input{
+  flex:1;
+}
+
+/* Responsive (small screens) */
+@media(max-width:560px){
+  .attach-zone{ flex-direction:column; gap:6px; padding:16px 10px; }
+  .attach-zone-text{ text-align:center; align-items:center; }
+  .map-add-row{ flex-wrap:wrap; }
+  .map-add-row input{ width:100%; flex:1 1 100%; }
+}
 </style>
 </head>
 <body>
@@ -840,7 +1049,7 @@ body {
         </svg>
       </div>
       <div class="tb-names">
-        <span class="tb-name">GAS IT Desk</span>
+        <span class="tb-name">GAS Internal Tickets</span>
         <span class="tb-sub">German Auto Service</span>
       </div>
     </div>
@@ -908,19 +1117,19 @@ body {
         <div class="ph">
           <div class="ph-left">
             <span class="ph-tag">طلباتي</span>
-            <h1 class="ph-title">تيكتاتي</h1>
-            <p class="ph-sub">جميع طلبات الدعم الفني المقدمة</p>
+            <h1 class="ph-title">طلباتي الداخلية</h1>
+            <p class="ph-sub">جميع الطلبات المقدمة للإدارات الأخرى</p>
           </div>
           <div class="ph-right">
             <button class="btn btn-gold" onclick="openNewTicketModal()">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              تيكت جديد
+              طلب جديد
             </button>
           </div>
         </div>
         <div class="tbl-wrap">
           <div class="tbl-head">
-            <span class="tbl-head-title">قائمة التيكتات</span>
+            <span class="tbl-head-title">قائمة الطلبات</span>
             <div class="tbl-filters">
               <input class="s-input" placeholder="بحث..." oninput="filterMyTickets(this.value)">
               <select class="s-select" onchange="filterMyByStatus(this.value)">
@@ -934,7 +1143,7 @@ body {
           </div>
           <div style="overflow-x:auto;">
             <table class="data-tbl"><thead><tr>
-              <th>رقم التيكت</th><th>العنوان</th><th>التصنيف</th><th>الأولوية</th><th>الحالة</th><th>التاريخ</th><th></th>
+              <th>الرقم</th><th>العنوان</th><th>الإدارة المسؤولة</th><th>الأولوية</th><th>الحالة</th><th>التاريخ</th><th></th>
             </tr></thead><tbody id="myTbody"></tbody></table>
           </div>
         </div>
@@ -944,9 +1153,9 @@ body {
       <div class="page" id="page-alltickets">
         <div class="ph">
           <div class="ph-left">
-            <span class="ph-tag">إدارة التيكتات</span>
-            <h1 class="ph-title">جميع التيكتات</h1>
-            <p class="ph-sub">إدارة وتتبع طلبات الدعم الفني</p>
+            <span class="ph-tag">إدارة الطلبات</span>
+            <h1 class="ph-title">جميع الطلبات الداخلية</h1>
+            <p class="ph-sub">إدارة وتتبع الطلبات بين الإدارات</p>
           </div>
           <div class="ph-right">
             <button class="btn btn-ghost" onclick="exportCSV()">
@@ -957,9 +1166,12 @@ body {
         </div>
         <div class="tbl-wrap">
           <div class="tbl-head">
-            <span class="tbl-head-title">قائمة التيكتات</span>
+            <span class="tbl-head-title">قائمة الطلبات</span>
             <div class="tbl-filters">
               <input class="s-input" placeholder="بحث..." oninput="filterAllTickets(this.value)">
+              <select class="s-select" id="at_dept" onchange="filterAll('department',this.value)">
+                <option value="">كل الإدارات</option>
+              </select>
               <select class="s-select" onchange="filterAll('status',this.value)">
                 <option value="">كل الحالات</option>
                 <option value="open">مفتوح</option>
@@ -985,7 +1197,7 @@ body {
           </div>
           <div style="overflow-x:auto;">
             <table class="data-tbl"><thead><tr>
-              <th>رقم التيكت</th><th>العنوان</th><th>مقدم الطلب</th><th>القسم</th><th>الأولوية</th><th>الحالة</th><th>المعين</th><th>SLA</th><th>إجراء</th>
+              <th>الرقم</th><th>العنوان</th><th>مقدم الطلب</th><th>قسمه</th><th>الأولوية</th><th>الحالة</th><th>المعين</th><th>SLA</th><th>إجراء</th>
             </tr></thead><tbody id="allTbody"></tbody></table>
           </div>
         </div>
@@ -1068,6 +1280,30 @@ body {
         <div id="archiveContent"></div>
       </div>
 
+      <!-- DEPARTMENT MAP (Super Admin) -->
+      <div class="page" id="page-deptmap">
+        <div class="ph">
+          <div class="ph-left">
+            <span class="ph-tag">إدارة النظام</span>
+            <h1 class="ph-title">الإدارات وأنواع الطلبات</h1>
+            <p class="ph-sub">أضف أو احذف إدارات وأنواع طلبات — تنعكس فوراً على نموذج إنشاء التيكت</p>
+          </div>
+        </div>
+        <div id="deptmapContent"></div>
+      </div>
+
+      <!-- ROLES ASSIGNMENT (Super Admin only) -->
+      <div class="page" id="page-roles">
+        <div class="ph">
+          <div class="ph-left">
+            <span class="ph-tag">إدارة النظام</span>
+            <h1 class="ph-title">الأدوار والإدارات</h1>
+            <p class="ph-sub">تحديد دور وإدارة كل موظف — مدير، مشرف، موظف</p>
+          </div>
+        </div>
+        <div id="rolesContent"></div>
+      </div>
+
       <!-- AUDIT LOG -->
       <div class="page" id="page-auditlog">
         <div id="auditlogContent"></div>
@@ -1094,25 +1330,25 @@ body {
 <div class="modal-mask" id="newTicketModal">
   <div class="modal-box">
     <div class="modal-hd">
-      <span class="modal-title">تيكت دعم فني جديد</span>
+      <span class="modal-title">طلب داخلي جديد</span>
       <button class="modal-x" onclick="closeModal('newTicketModal')">×</button>
     </div>
     <div class="modal-bd">
       <div class="fg-2">
-        <div class="full fg"><label class="fl">عنوان المشكلة *</label><input class="fi" id="nt_title" placeholder="وصف مختصر للمشكلة"></div>
-        <div class="fg"><label class="fl">التصنيف *</label>
-          <select class="fsel" id="nt_cat">
-            <option value="">اختر التصنيف</option>
-            <option value="hardware">أجهزة</option>
-            <option value="software">برامج</option>
-            <option value="network">شبكة</option>
-            <option value="email">بريد إلكتروني</option>
-            <option value="access">صلاحيات</option>
-            <option value="printer">طابعة</option>
-            <option value="security">أمن معلومات</option>
-            <option value="other">أخرى</option>
+        <div class="full fg"><label class="fl">عنوان الطلب *</label><input class="fi" id="nt_title" placeholder="وصف مختصر للطلب"></div>
+
+        <div class="fg"><label class="fl">الإدارة المسؤولة *</label>
+          <select class="fsel" id="nt_dept" onchange="onDeptChange()">
+            <option value="">اختر الإدارة</option>
           </select>
         </div>
+
+        <div class="fg"><label class="fl">نوع الطلب *</label>
+          <select class="fsel" id="nt_reqtype" disabled>
+            <option value="">اختر الإدارة أولاً</option>
+          </select>
+        </div>
+
         <div class="fg"><label class="fl">الأولوية *</label>
           <select class="fsel" id="nt_priority">
             <option value="low">منخفضة</option>
@@ -1121,11 +1357,26 @@ body {
             <option value="critical">حرجة</option>
           </select>
         </div>
-        <div class="full fg"><label class="fl">وصف تفصيلي *</label><textarea class="fta" id="nt_desc" placeholder="اشرح المشكلة بالتفصيل..."></textarea></div>
+
+        <div class="full fg"><label class="fl">وصف تفصيلي *</label><textarea class="fta" id="nt_desc" placeholder="اشرح الطلب بالتفصيل..."></textarea></div>
+
+        <div class="full fg">
+          <label class="fl">مرفقات (صور، PDF، ملفات) — اختياري</label>
+          <div class="attach-zone" id="nt_attach_zone" onclick="document.getElementById('nt_attach_input').click()">
+            <input type="file" id="nt_attach_input" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.rar" style="display:none" onchange="handleAttachSelect(event)">
+            <div class="attach-zone-icon">📎</div>
+            <div class="attach-zone-text">
+              <strong>اضغط لاختيار الملفات</strong>
+              <span>أو اسحبها وأفلتها هنا</span>
+              <small>الحد الأقصى: 10 ميجا لكل ملف</small>
+            </div>
+          </div>
+          <div id="nt_attach_list" class="attach-list"></div>
+        </div>
       </div>
     </div>
     <div class="modal-ft">
-      <button class="btn btn-gold" onclick="submitTicket()">إرسال الطلب</button>
+      <button class="btn btn-gold" id="nt_submit_btn" onclick="submitTicket()">إرسال الطلب</button>
       <button class="btn btn-ghost" onclick="closeModal('newTicketModal')">إلغاء</button>
     </div>
   </div>
@@ -1179,11 +1430,15 @@ body {
         <div class="fg"><label class="fl">الدور *</label>
           <select class="fsel" id="nu_role">
             <option value="employee">موظف</option>
-            <option value="admin">IT Admin</option>
-            <option value="manager">مدير</option>
+            <option value="supervisor">مشرف إدارة</option>
+            <option value="manager">مدير إدارة</option>
           </select>
         </div>
-        <div class="fg"><label class="fl">القسم</label><input class="fi" id="nu_dept" placeholder="المبيعات، الورشة..."></div>
+        <div class="fg"><label class="fl">الإدارة *</label>
+          <select class="fsel" id="nu_dept">
+            <option value="">— اختر الإدارة —</option>
+          </select>
+        </div>
         <div class="fg"><label class="fl">رقم الهاتف</label><input class="fi" id="nu_phone" placeholder="01xxxxxxxxx"></div>
         <div class="fg" id="statusField" style="display:none;">
           <label class="fl">الحالة</label>

@@ -45,7 +45,13 @@ const _ago = iso => {
   return 'الآن';
 };
 
-const ROLES = { employee:'موظف', admin:'IT Admin', manager:'مدير' };
+const ROLES = {
+  super_admin: 'مدير النظام',
+  manager:     'مدير إدارة',
+  supervisor:  'مشرف إدارة',
+  admin:       'IT Admin',       // legacy — يُعامل كـ supervisor
+  employee:    'موظف',
+};
 const STATUS_L = { open:'مفتوح', assigned:'معين', in_progress:'قيد التنفيذ', resolved:'محلول', closed:'مغلق', escalated:'مصعد', archived:'مؤرشف' };
 const PRIO_L   = { critical:'حرجة', high:'عالية', medium:'متوسطة', low:'منخفضة' };
 const CAT_L    = { hardware:'أجهزة', software:'برامج', network:'شبكة', email:'بريد', access:'صلاحيات', printer:'طابعة', security:'أمن', other:'أخرى' };
@@ -53,11 +59,173 @@ const STATUS_C = { open:'b-open', assigned:'b-assign', in_progress:'b-prog', res
 const PRIO_C   = { critical:'b-crit', high:'b-high', medium:'b-med', low:'b-low' };
 const PRIO_SLA = { critical:4, high:8, medium:24, low:72 };
 
+// ── DEPARTMENT / REQUEST-TYPE MAP (cached in memory, loaded from DB) ─────
+// Fallback default map used if DB fetch fails — mirrors the seed in supabase-migration-internal.sql
+const DEFAULT_DEPT_MAP = {
+  'الخدمة':           ['طلب عربية بديلة','متابعة حالة صيانة','استفسار عن موعد تسليم','شكوى فنية','طلب تقدير تكلفة','أخرى'],
+  'الكول سنتر':       ['تحويل عميل','بيانات عميل','متابعة موعد','استفسار حملة','أخرى'],
+  'IT':              ['مشكلة جهاز','مشكلة شبكة','طلب صلاحيات','مشكلة بريد إلكتروني','مشكلة طابعة','تركيب/تحديث برنامج','أمن معلومات','أخرى'],
+  'CRM':             ['تحديث بيانات عميل','إضافة عميل جديد','سحب تقرير','مشكلة في النظام','استفسار CSI','أخرى'],
+  'الحسابات':         ['طلب فاتورة','مردودات','كشف حساب','صرف مصروفات','موافقات مالية','أخرى'],
+  'المبيعات':         ['طلب عرض سعر','توفر موديل','كتالوج/بروشور','متابعة عميل محتمل','أخرى'],
+  'قطع الغيار':       ['توفر قطعة','طلب توريد','سعر قطعة','إرجاع قطعة','أخرى'],
+  'الصيانة':          ['حجز موعد','استعجال إصلاح','استلام سيارة','تقييم فني','أخرى'],
+  'الموارد البشرية':  ['طلب إجازة','شهادة خبرة','استفسار مرتب','تظلم','أخرى'],
+  'المخازن':          ['صرف مستلزمات','جرد','توفر بضاعة','أخرى'],
+};
+
+// Runtime map (populated by loadDepartmentMap)
+let DEPT_MAP = { ...DEFAULT_DEPT_MAP };
+
+// ── PERMISSIONS LAYER ─────────────────────────────────────
+// كل قواعد الصلاحيات في مكان واحد — أي تعديل مستقبلي يتم هنا فقط
+const Perm = {
+  // هل المستخدم super admin؟
+  isSuper:  () => S.user?.role === 'super_admin',
+
+  // هل المستخدم مدير إدارة؟ (ملاحظة: manager دلوقتي يعني مدير إدارة واحدة، مش كل النظام)
+  isManager: () => S.user?.role === 'manager',
+
+  // هل المستخدم مشرف؟ (admin القديم يُعامل كـ supervisor)
+  isSupervisor: () => S.user?.role === 'supervisor' || S.user?.role === 'admin',
+
+  // هل المستخدم موظف عادي؟
+  isEmployee: () => S.user?.role === 'employee',
+
+  // هل ده صاحب صلاحيات قيادية في إدارته؟ (مدير أو مشرف)
+  isDeptLead: () => Perm.isManager() || Perm.isSupervisor(),
+
+  // الإدارة اللي المستخدم بيتبعها
+  myDept: () => (S.user?.department || '').trim(),
+
+  // هل ده مستخدم تابع لنفس إدارة الطلب المستهدفة؟
+  sameDeptAs: (t) => Perm.myDept() && Perm.myDept() === (t.target_department || '').trim(),
+
+  // ── رؤية الطلبات ──
+  // هل المستخدم يقدر يشوف تفاصيل التيكت ده؟
+  canSeeTicket: (t) => {
+    if (!t) return false;
+    // super_admin يشوف كل حاجة
+    if (Perm.isSuper()) return true;
+    // صاحب الطلب دايماً يشوفه (شفافية كاملة لمقدم الطلب)
+    if (t.created_by === S.user.id) return true;
+    // المعين عليه يشوفه
+    if (t.assigned_to === S.user.id) return true;
+    // Legacy: التيكتات القديمة بدون target_department يشوفها كل الـ admins/managers/supervisors
+    if (!t.target_department) {
+      return Perm.isManager() || Perm.isSupervisor();
+    }
+    // مدير/مشرف الإدارة المستهدفة يشوف كل طلباتها
+    if (Perm.sameDeptAs(t) && Perm.isDeptLead()) return true;
+    // موظف في نفس الإدارة يشوف الطلبات المفتوحة (open) عشان يقدر يستلمها
+    if (Perm.sameDeptAs(t) && Perm.isEmployee() && t.status === 'open') return true;
+    return false;
+  },
+
+  // هل يقدر يعدّل حالة التيكت / يرد عليه؟
+  canActOnTicket: (t) => {
+    if (!t) return false;
+    if (Perm.isSuper()) return true;
+    // المعين عليه
+    if (t.assigned_to === S.user.id) return true;
+    // قيادة الإدارة المستهدفة
+    if (Perm.sameDeptAs(t) && Perm.isDeptLead()) return true;
+    return false;
+  },
+
+  // هل يقدر يعين التيكت (assign_to)?
+  // بناء على قرار عمار: "المدير والمشرف + أي موظف في نفس الإدارة"
+  canAssignTicket: (t) => {
+    if (!t) return false;
+    if (Perm.isSuper()) return true;
+    if (Perm.sameDeptAs(t)) return true;
+    return false;
+  },
+
+  // هل يقدر يحذف/يؤرشف تيكت؟
+  canDeleteTicket: (t) => {
+    if (!t) return false;
+    if (Perm.isSuper()) return true;
+    // مدير الإدارة فقط (مش المشرف) يقدر يؤرشف
+    if (Perm.sameDeptAs(t) && Perm.isManager()) return true;
+    return false;
+  },
+
+  // ── رؤية المستخدمين ──
+  // هل يقدر يدير هذا المستخدم؟ (تعديل/حذف/تغيير دور)
+  canManageUser: (u) => {
+    if (!u) return false;
+    if (u.username === 'ammar.admin') return S.user.username === 'ammar.admin';
+    if (Perm.isSuper()) return true;
+    // مدير الإدارة يدير بس موظفي إدارته (مش المشرفين زيه أو فوقه)
+    if (Perm.isManager() && u.department === Perm.myDept()) {
+      return u.role === 'employee' || u.role === 'supervisor';
+    }
+    return false;
+  },
+
+  // ── الصفحات المسموح بها ──
+  canSeePage: (page) => {
+    switch (page) {
+      case 'dashboard':  return true;
+      case 'mytickets':  return true;
+      case 'profile':    return true;
+      case 'alltickets': return Perm.isDeptLead() || Perm.isSuper();
+      case 'reports':    return Perm.isDeptLead() || Perm.isSuper();
+      case 'users':      return Perm.isManager() || Perm.isSuper();
+      case 'roles':      return Perm.isSuper();  // صفحة تعيين الأدوار — super_admin فقط
+      case 'deptmap':    return Perm.isSuper();
+      case 'archive':    return Perm.isSuper();
+      case 'auditlog':   return Perm.isSuper();
+      default: return false;
+    }
+  },
+};
+
+// فلترة التيكتات المرئية للمستخدم الحالي
+function visibleTickets() {
+  return (S.tickets || []).filter(t => Perm.canSeeTicket(t));
+}
+
+// فلترة المستخدمين المرئيين للمستخدم الحالي
+function visibleUsers() {
+  if (Perm.isSuper()) return S.users;
+  if (Perm.isManager()) return S.users.filter(u => u.department === Perm.myDept());
+  return S.users;  // الباقي ما يشوفش صفحة المستخدمين أصلاً
+}
+
 const badge  = (t,c) => `<span class="badge ${c}">${_e(t)}</span>`;
 const sbadge = s => badge(STATUS_L[s]||s, STATUS_C[s]||'b-open');
 const pbadge = p => badge(PRIO_L[p]||p,   PRIO_C[p]||'b-med');
 const uname  = id => S.users.find(u=>u.id===id)?.name || '—';
 const udept  = id => S.users.find(u=>u.id===id)?.department || '—';
+
+// ── ATTACHMENT HELPERS ──────────────────────────────────
+const ATTACH_MAX_SIZE = 10 * 1024 * 1024;  // 10 MB
+const ATTACH_ICONS = {
+  'image': '🖼️', 'pdf': '📄', 'word': '📝', 'excel': '📊',
+  'powerpoint': '📽️', 'text': '📃', 'archive': '🗜️', 'other': '📎'
+};
+function attachTypeIcon(mime, name){
+  const m = (mime||'').toLowerCase();
+  const n = (name||'').toLowerCase();
+  if (m.startsWith('image/')) return ATTACH_ICONS.image;
+  if (m.includes('pdf') || n.endsWith('.pdf')) return ATTACH_ICONS.pdf;
+  if (m.includes('word')  || /\.(doc|docx)$/.test(n)) return ATTACH_ICONS.word;
+  if (m.includes('sheet') || m.includes('excel') || /\.(xls|xlsx|csv)$/.test(n)) return ATTACH_ICONS.excel;
+  if (m.includes('presentation') || /\.(ppt|pptx)$/.test(n)) return ATTACH_ICONS.powerpoint;
+  if (m.includes('text') || n.endsWith('.txt')) return ATTACH_ICONS.text;
+  if (m.includes('zip') || m.includes('rar') || /\.(zip|rar|7z)$/.test(n)) return ATTACH_ICONS.archive;
+  return ATTACH_ICONS.other;
+}
+function fmtSize(b){
+  if (!b && b !== 0) return '';
+  if (b < 1024) return `${b} B`;
+  if (b < 1024*1024) return `${(b/1024).toFixed(1)} KB`;
+  return `${(b/1024/1024).toFixed(2)} MB`;
+}
+// Pending attachments staged in the New Ticket modal (cleared on submit/close)
+let pendingAttachments = [];
 
 // ── SUPABASE CLIENT ──────────────────────────────────────
 async function sbFetch(path, opts={}) {
@@ -272,7 +440,7 @@ async function bootApp() {
   $('loginScreen').classList.remove('visible');
   $('appShell').classList.add('on');
 
-  await Promise.all([loadTickets(), loadUsers(), loadNotifications()]);
+  await Promise.all([loadTickets(), loadUsers(), loadNotifications(), loadDepartmentMap()]);
 
   buildTopbar();
   buildNav();
@@ -369,41 +537,53 @@ async function loadNotifications() {
   renderNotifPanel();
 }
 
+// ── DEPARTMENT MAP: load from DB, fall back to defaults ─────
+async function loadDepartmentMap() {
+  try {
+    const rows = await sbFetch('/department_requests?is_active=eq.true&order=department,sort_order');
+    if (!rows || !rows.length) { DEPT_MAP = { ...DEFAULT_DEPT_MAP }; return; }
+    const map = {};
+    rows.forEach(r => {
+      if (!map[r.department]) map[r.department] = [];
+      map[r.department].push(r.request_type);
+    });
+    DEPT_MAP = map;
+  } catch {
+    DEPT_MAP = { ...DEFAULT_DEPT_MAP };
+  }
+}
+
+function deptList()  { return Object.keys(DEPT_MAP); }
+function typesOf(dept){ return DEPT_MAP[dept] || []; }
+
 // ═══════════════════════════════════════════════════════
 //  TOPBAR & NAV
 // ═══════════════════════════════════════════════════════
 function buildTopbar() {
   const u = S.user;
   $('tbName').textContent   = u.name;
-  $('tbRole').textContent   = ROLES[u.role] || u.role;
+  // عرض: الدور · الإدارة (مثلاً: "مدير إدارة · الحسابات")
+  const roleLabel = ROLES[u.role] || u.role;
+  const deptSuffix = u.department && u.department !== 'إدارة النظام' ? ` · ${u.department}` : '';
+  $('tbRole').textContent   = roleLabel + deptSuffix;
   $('tbAvatar').textContent = u.name.charAt(0);
 }
 
 function buildNav() {
-  const role = S.user?.role;
-  const defs = {
-    employee: [
-      ['dashboard',  '⊞', 'الرئيسية'],
-      ['mytickets',  '🎫', 'طلباتي'],
-      ['profile',    '👤', 'حسابي'],
-    ],
-    admin: [
-      ['dashboard',  '⊞', 'الرئيسية'],
-      ['alltickets', '🎫', 'التيكتات'],
-      ['reports',    '📊', 'التقارير'],
-      ['profile',    '👤', 'حسابي'],
-    ],
-    manager: [
-      ['dashboard',  '⊞', 'الرئيسية'],
-      ['alltickets', '🎫', 'التيكتات'],
-      ['users',      '👥', 'المستخدمون'],
-      ['reports',    '📊', 'التقارير'],
-      ['archive',    '📦', 'الأرشيف'],
-      ['auditlog',   '🛡️', 'سجل العمليات'],
-      ['profile',    '👤', 'حسابي'],
-    ],
-  };
-  const items = defs[role] || defs.employee;
+  // قائمة موحدة — بتتفلتر حسب الصلاحية
+  const allItems = [
+    ['dashboard',  '⊞',  'الرئيسية'],
+    ['mytickets',  '🎫', 'طلباتي'],
+    ['alltickets', '📋', Perm.isSuper() ? 'كل الطلبات' : `طلبات ${Perm.myDept() || 'إدارتي'}`],
+    ['users',      '👥', 'المستخدمون'],
+    ['reports',    '📊', 'التقارير'],
+    ['roles',      '🔑', 'الأدوار'],
+    ['deptmap',    '🏢', 'الإدارات'],
+    ['archive',    '📦', 'الأرشيف'],
+    ['auditlog',   '🛡️', 'سجل العمليات'],
+    ['profile',    '👤', 'حسابي'],
+  ];
+  const items = allItems.filter(([id]) => Perm.canSeePage(id));
   $('mainNav').innerHTML = items.map(([id,,label]) => {
     const count = getNavCount(id);
     const badge = count > 0
@@ -415,10 +595,16 @@ function buildNav() {
 
 function getNavCount(pageId) {
   if (!S.tickets?.length) return 0;
-  const active = S.tickets.filter(t=>t.status!=='archived');
-  if (pageId === 'mytickets')  return active.filter(t=>t.created_by===S.user.id&&['open','assigned','in_progress'].includes(t.status)).length;
-  if (pageId === 'alltickets') return active.filter(t=>['open','assigned'].includes(t.status)).length;
-  if (pageId === 'archive')    return S.tickets.filter(t=>t.status==='archived').length;
+  if (pageId === 'mytickets') {
+    return S.tickets.filter(t=>t.created_by===S.user.id && ['open','assigned','in_progress'].includes(t.status)).length;
+  }
+  if (pageId === 'alltickets') {
+    // عدّاد الطلبات المرئية لي (مش المؤرشفة) اللي لسه مفتوحة
+    return visibleTickets().filter(t => ['open','assigned'].includes(t.status)).length;
+  }
+  if (pageId === 'archive') {
+    return S.tickets.filter(t=>t.status==='archived').length;
+  }
   return 0;
 }
 
@@ -442,6 +628,11 @@ function refreshNavCounts() {
 //  ROUTING
 // ═══════════════════════════════════════════════════════
 function showPage(id) {
+  // Permission guard
+  if (!Perm.canSeePage(id)) {
+    toast('ليس لديك صلاحية لعرض هذه الصفحة','error');
+    id = 'dashboard';
+  }
   S.prevPage = S.page;
   S.page     = id;
 
@@ -464,6 +655,8 @@ function showPage(id) {
     auditlog: renderAuditLog,
     archive:  renderArchive,
     profile:  renderProfile,
+    deptmap:  renderDeptMap,
+    roles:    renderRoles,
   };
   if (renders[id]) renders[id]();
 
@@ -576,33 +769,36 @@ function renderDashCharts(tickets) {
       </div>
     </div>`;
 
-  // Donut — by category
+  // Donut — by target department (fallback to legacy category if missing)
   const cats={};
-  tickets.forEach(t=>{cats[t.category]=(cats[t.category]||0)+1;});
+  tickets.forEach(t=>{
+    const key = t.target_department || CAT_L[t.category] || t.category || 'غير محدد';
+    cats[key] = (cats[key]||0) + 1;
+  });
   const total   = tickets.length;
   const divisor = total || 1; // avoid division by zero
-  const colors = ['#B8975A','#60A5FA','#4ADE80','#F87171','#FCD34D','#C084FC','#22D3EE','#FB923C'];
+  const colors = ['#B8975A','#60A5FA','#4ADE80','#F87171','#FCD34D','#C084FC','#22D3EE','#FB923C','#F472B6','#A78BFA'];
   // Build donut: empty state if no tickets
   let donutHtml;
   if (total === 0) {
     donutHtml = `<div class="chart-card c5">
-      <div class="ch-head"><div><div class="ch-title">التوزيع حسب الفئة</div><div class="ch-sub">0 إجمالي</div></div></div>
+      <div class="ch-head"><div><div class="ch-title">التوزيع حسب الإدارة</div><div class="ch-sub">0 إجمالي</div></div></div>
       <div class="empty-state" style="padding:24px;"><p>لا توجد تيكتات</p></div>
     </div>`;
   } else {
-  const catList = Object.entries(cats).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  const catList = Object.entries(cats).sort((a,b)=>b[1]-a[1]).slice(0,8);
   const R=38, circ=2*Math.PI*R;
   let off=0;
   const slices = catList.map((c,i)=>{
     const pct=c[1]/divisor;
     const d=pct*circ, g=circ-d, o=off;
     off+=d;
-    return {label:CAT_L[c[0]]||c[0],val:c[1],color:colors[i],d,g,o};
+    return {label:c[0],val:c[1],color:colors[i%colors.length],d,g,o};
   });
 
   donutHtml = `
     <div class="chart-card c5">
-      <div class="ch-head"><div><div class="ch-title">التوزيع حسب الفئة</div><div class="ch-sub">${total} إجمالي</div></div></div>
+      <div class="ch-head"><div><div class="ch-title">التوزيع حسب الإدارة</div><div class="ch-sub">${total} إجمالي</div></div></div>
       <div class="donut-wrap">
         <svg width="90" height="90" viewBox="0 0 90 90" style="flex-shrink:0;">
           ${slices.map(s=>`<circle cx="45" cy="45" r="${R}" fill="none" stroke="${s.color}" stroke-width="11"
@@ -680,27 +876,40 @@ function applyMyFilter(list) {
 // ═══════════════════════════════════════════════════════
 function renderAllTickets() {
   // Reset filters when page loads fresh
-  S.allFilter = { status: '', priority: '', search: '', date: '' };
+  S.allFilter = { status: '', priority: '', search: '', date: '', department: '' };
   const inputs = document.querySelectorAll('#page-alltickets .s-input, #page-alltickets .s-select');
   inputs.forEach(el => { el.value = ''; });
-  // استثناء المؤرشفة من العرض العادي
-  renderTicketRows('allTbody', applyAllFilter(S.tickets.filter(t=>t.status!=='archived')), true);
+  // Populate department filter dropdown (super_admin only — غير كده الإدارة ثابتة)
+  const deptSel = $('at_dept');
+  if (deptSel) {
+    if (Perm.isSuper()) {
+      deptSel.innerHTML = `<option value="">كل الإدارات</option>` +
+        deptList().map(d => `<option value="${_e(d)}">${_e(d)}</option>`).join('');
+      deptSel.style.display = '';
+    } else {
+      deptSel.style.display = 'none';
+    }
+  }
+  // استثناء المؤرشفة + تطبيق فلتر الرؤية
+  renderTicketRows('allTbody', applyAllFilter(visibleTickets().filter(t=>t.status!=='archived')), true);
 }
 function filterAllTickets(q) {
   S.allFilter.search = q;
-  renderTicketRows('allTbody', applyAllFilter(S.tickets.filter(t=>t.status!=='archived')), true);
+  renderTicketRows('allTbody', applyAllFilter(visibleTickets().filter(t=>t.status!=='archived')), true);
 }
 function filterAll(key, val) {
-  if (key==='status')   S.allFilter.status   = val;
-  if (key==='priority') S.allFilter.priority = val;
-  if (key==='date')     S.allFilter.date     = val;
-  renderTicketRows('allTbody', applyAllFilter(S.tickets.filter(t=>t.status!=='archived')), true);
+  if (key==='status')     S.allFilter.status     = val;
+  if (key==='priority')   S.allFilter.priority   = val;
+  if (key==='date')       S.allFilter.date       = val;
+  if (key==='department') S.allFilter.department = val;
+  renderTicketRows('allTbody', applyAllFilter(visibleTickets().filter(t=>t.status!=='archived')), true);
 }
 function applyAllFilter(list) {
   let r = list;
-  if (S.allFilter.status)   r = r.filter(t=>t.status===S.allFilter.status);
-  if (S.allFilter.priority) r = r.filter(t=>t.priority===S.allFilter.priority);
-  if (S.allFilter.search)   r = r.filter(t=>t.title.includes(S.allFilter.search)||t.ticket_number.includes(S.allFilter.search)||uname(t.created_by).includes(S.allFilter.search));
+  if (S.allFilter.status)     r = r.filter(t=>t.status===S.allFilter.status);
+  if (S.allFilter.priority)   r = r.filter(t=>t.priority===S.allFilter.priority);
+  if (S.allFilter.department) r = r.filter(t=>(t.target_department||'')===S.allFilter.department);
+  if (S.allFilter.search)     r = r.filter(t=>t.title.includes(S.allFilter.search)||t.ticket_number.includes(S.allFilter.search)||uname(t.created_by).includes(S.allFilter.search));
   if (S.allFilter.date) {
     const now = Date.now();
     const ms  = { today: 86400000, week: 604800000, month: 2592000000 }[S.allFilter.date];
@@ -726,9 +935,17 @@ function renderTicketRows(tbodyId, tickets, isAdmin) {
     tbody.innerHTML = tickets.map(t=>{
       const sla = getSLA(t);
       const canDel = S.user.role==='manager';
+      const deptTag = t.target_department
+        ? `<div style="font-size:10px;color:var(--gold);margin-top:2px;">🏢 ${_e(t.target_department)}${t.request_type?' · '+_e(t.request_type):''}</div>`
+        : '';
+      const attachTag = (t.attachments && t.attachments.length)
+        ? `<span style="font-size:10px;color:var(--gold);margin-inline-start:6px;">📎 ${t.attachments.length}</span>` : '';
       return `<tr onclick="openTicketDetail('${t.id}')">
         <td><span class="tnum">${_e(t.ticket_number)}</span></td>
-        <td style="max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}</td>
+        <td style="max-width:220px;">
+          <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}${attachTag}</div>
+          ${deptTag}
+        </td>
         <td>${_e(uname(t.created_by))}</td>
         <td>${_e(udept(t.created_by))}</td>
         <td>${pbadge(t.priority)}</td>
@@ -747,16 +964,25 @@ function renderTicketRows(tbodyId, tickets, isAdmin) {
       </tr>`;
     }).join('');
   } else {
-    tbody.innerHTML = tickets.map(t=>`
+    tbody.innerHTML = tickets.map(t=>{
+      const deptCell = t.target_department
+        ? `<span class="dept-chip">${_e(t.target_department)}</span>`
+        : _e(CAT_L[t.category]||t.category||'—');
+      return `
       <tr onclick="openTicketDetail('${t.id}')">
         <td><span class="tnum">${_e(t.ticket_number)}</span></td>
-        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}</td>
-        <td>${_e(CAT_L[t.category]||t.category)}</td>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+          ${_e(t.title)}
+          ${t.request_type ? `<div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${_e(t.request_type)}</div>` : ''}
+          ${(t.attachments && t.attachments.length) ? `<span style="font-size:10px;color:var(--gold);margin-inline-start:6px;">📎 ${t.attachments.length}</span>` : ''}
+        </td>
+        <td>${deptCell}</td>
         <td>${pbadge(t.priority)}</td>
         <td>${sbadge(t.status)}</td>
         <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
         <td><button class="btn btn-ghost" style="padding:4px 9px;font-size:11px;" onclick="event.stopPropagation();openTicketDetail('${t.id}')">تفاصيل</button></td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
   }
 }
 
@@ -773,17 +999,55 @@ function getSLA(t) {
 // ═══════════════════════════════════════════════════════
 //  TICKET DETAIL
 // ═══════════════════════════════════════════════════════
+function renderAttachmentsPanel(t){
+  const atts = Array.isArray(t.attachments) ? t.attachments : [];
+  if (!atts.length) return '';
+  const items = atts.map(a => {
+    const isImage = (a.type||'').startsWith('image/');
+    const preview = isImage
+      ? `<a href="${_e(a.url)}" target="_blank" rel="noopener" title="عرض الصورة">
+           <img src="${_e(a.url)}" alt="${_e(a.name)}"
+                style="display:block;width:100%;max-height:120px;object-fit:cover;border-radius:4px;margin-bottom:6px;">
+         </a>`
+      : '';
+    return `
+      <div class="attach-item" style="flex-direction:column;align-items:stretch;gap:4px;padding:8px;">
+        ${preview}
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="attach-item-icon">${attachTypeIcon(a.type, a.name)}</span>
+          <span class="attach-item-name">${_e(a.name)}</span>
+          <span class="attach-item-size">${fmtSize(a.size)}</span>
+        </div>
+        <a class="attach-item-link" href="${_e(a.url)}" target="_blank" rel="noopener" download="${_e(a.name)}">
+          ⬇️ تحميل / عرض
+        </a>
+      </div>`;
+  }).join('');
+  return `
+    <div class="dc">
+      <div class="dc-title">المرفقات (${atts.length})</div>
+      <div class="attach-list">${items}</div>
+    </div>`;
+}
+
 async function openTicketDetail(id) {
   S.selTicket = id;
   const t = S.tickets.find(t=>t.id===id);
   if (!t) return;
 
+  // Permission guard — مش يفتحش تيكت مش مسموح بيه
+  if (!Perm.canSeeTicket(t)) {
+    toast('ليس لديك صلاحية لعرض هذا الطلب','error');
+    showPage('dashboard');
+    return;
+  }
+
   $('detailNum').textContent   = t.ticket_number;
   $('detailTitle').textContent = t.title;
 
-  const canUpdate = S.user.role !== 'employee';
-  const canDelete = S.user.role === 'manager';
-  const canAssign = S.user.role !== 'employee' && t.assigned_to !== S.user.id && !['resolved','closed'].includes(t.status);
+  const canUpdate = Perm.canActOnTicket(t);
+  const canDelete = Perm.canDeleteTicket(t);
+  const canAssign = Perm.canAssignTicket(t) && t.assigned_to !== S.user.id && !['resolved','closed'].includes(t.status);
   $('detailBtns').innerHTML = `
     ${canAssign?`<button class="btn btn-ghost" onclick="assignToMe('${id}')" style="border-color:var(--gold);color:var(--gold);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>تعيين لي</button>`:''}
     ${canUpdate?`<button class="btn btn-ghost" onclick="quickUpdate('${id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>تحديث الحالة</button>`:''}
@@ -827,17 +1091,24 @@ async function openTicketDetail(id) {
 
     <div>
       <div class="dc">
-        <div class="dc-title">تفاصيل التيكت</div>
+        <div class="dc-title">تفاصيل الطلب</div>
         ${[
           ['الحالة',     sbadge(t.status)],
           ['الأولوية',   pbadge(t.priority)],
-          ['التصنيف',    _e(CAT_L[t.category]||t.category)],
+          ['الإدارة المسؤولة', t.target_department
+              ? `<span class="dept-chip">🏢 ${_e(t.target_department)}</span>`
+              : _e(CAT_L[t.category]||t.category||'—')],
+          ['نوع الطلب', t.request_type
+              ? `<span class="reqtype-chip">${_e(t.request_type)}</span>`
+              : '—'],
           ['مقدم الطلب', _e(uname(t.created_by))],
-          ['القسم',      _e(udept(t.created_by))],
+          ['قسم المقدم', _e(udept(t.created_by))],
           ['المعين',     _e(t.assigned_to?uname(t.assigned_to):'غير معين')],
           ['التاريخ',    `<span style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</span>`],
         ].map(([k,v])=>`<div class="meta-row"><span class="meta-key">${k}</span><span class="meta-val">${v}</span></div>`).join('')}
       </div>
+
+      ${renderAttachmentsPanel(t)}
 
       <div class="dc">
         <div class="dc-title">مؤشر SLA</div>
@@ -887,25 +1158,34 @@ function quickUpdate(ticketId) {
   $('upd_status').value = t.status;
   $('upd_note').value   = '';
 
-  // Build assign-to dropdown — visible to manager only
+  // Build assign-to dropdown — visible to anyone who can assign this ticket
   const assignWrap = $('upd_assign_wrap');
   const assignSel  = $('upd_assigned_to');
-  const isManager  = S.user.role === 'manager';
+  const canAssign  = Perm.canAssignTicket(t);
 
-  if (isManager) {
+  if (canAssign) {
     assignWrap.style.display = '';
-    // Populate with IT admins
-    const itStaff = S.users.filter(u => u.role === 'admin' || u.role === 'manager');
+    // قائمة المعينين: موظفي نفس الإدارة المستهدفة (أو كل النظام لو super_admin والإدارة غير محددة)
+    let candidates;
+    if (Perm.isSuper() && !t.target_department) {
+      candidates = S.users.filter(u => u.is_active !== false);
+    } else {
+      const dept = (t.target_department || Perm.myDept() || '').trim();
+      candidates = S.users.filter(u => (u.department || '').trim() === dept && u.is_active !== false);
+    }
+    // ترتيب: المديرين أولاً، ثم المشرفين، ثم الموظفين
+    const roleRank = r => r==='manager'?1 : (r==='supervisor'||r==='admin')?2 : 3;
+    candidates.sort((a,b) => roleRank(a.role) - roleRank(b.role) || (a.name||'').localeCompare(b.name||''));
+
     assignSel.innerHTML = `<option value="">— بدون تعيين —</option>` +
-      itStaff.map(u =>
-        `<option value="${u.id}" ${t.assigned_to===u.id?'selected':''}>${_e(u.name)} — ${_e(u.department||ROLES[u.role])}</option>`
+      candidates.map(u =>
+        `<option value="${u.id}" ${t.assigned_to===u.id?'selected':''}>${_e(u.name)} — ${_e(ROLES[u.role]||u.role)}</option>`
       ).join('');
-    // Pre-select current assigned
     assignSel.value = t.assigned_to || '';
   } else {
-    // Admin: hide assign field, auto-assign to self on save
+    // ما يقدرش يعيّن — الحقل مخفي، والـ assign يفضل زي ما هو
     assignWrap.style.display = 'none';
-    assignSel.value = S.user.id;
+    assignSel.value = t.assigned_to || '';
   }
 
   openModal('updateTicketModal');
@@ -1068,63 +1348,228 @@ async function deleteTicket(id) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  NEW TICKET
+//  NEW TICKET (Internal Inter-Department System)
 // ═══════════════════════════════════════════════════════
 function openNewTicketModal() {
   ['nt_title','nt_desc'].forEach(id=>$(id).value='');
-  $('nt_cat').value='';
-  $('nt_priority').value='medium';
+  $('nt_priority').value = 'medium';
+
+  // Populate department dropdown
+  const deptSel = $('nt_dept');
+  const rtSel   = $('nt_reqtype');
+  deptSel.innerHTML = `<option value="">اختر الإدارة</option>` +
+    deptList().map(d => `<option value="${_e(d)}">${_e(d)}</option>`).join('');
+  deptSel.value = '';
+  rtSel.innerHTML = `<option value="">اختر الإدارة أولاً</option>`;
+  rtSel.disabled = true;
+  rtSel.value = '';
+
+  // Reset attachments
+  pendingAttachments = [];
+  renderPendingAttachments();
+  const zone = $('nt_attach_zone');
+  if (zone) { zone.classList.remove('dragover'); wireAttachZone(zone); }
+  const inp = $('nt_attach_input');
+  if (inp) inp.value = '';
+
   openModal('newTicketModal');
+}
+
+// Called when the department dropdown changes
+function onDeptChange() {
+  const dept = $('nt_dept').value;
+  const rtSel = $('nt_reqtype');
+  if (!dept) {
+    rtSel.innerHTML = `<option value="">اختر الإدارة أولاً</option>`;
+    rtSel.disabled = true;
+    return;
+  }
+  const types = typesOf(dept);
+  rtSel.innerHTML = `<option value="">اختر نوع الطلب</option>` +
+    types.map(t => `<option value="${_e(t)}">${_e(t)}</option>`).join('');
+  rtSel.disabled = false;
+}
+
+// ── Drag & drop handlers (attached once per modal open) ────
+function wireAttachZone(zone){
+  zone.ondragover  = e => { e.preventDefault(); zone.classList.add('dragover'); };
+  zone.ondragleave = () => zone.classList.remove('dragover');
+  zone.ondrop      = e => {
+    e.preventDefault();
+    zone.classList.remove('dragover');
+    const files = [...(e.dataTransfer?.files || [])];
+    addFilesToQueue(files);
+  };
+}
+
+function handleAttachSelect(ev) {
+  const files = [...(ev.target?.files || [])];
+  addFilesToQueue(files);
+  ev.target.value = '';  // allow reselecting the same file
+}
+
+function addFilesToQueue(files){
+  for (const f of files) {
+    if (f.size > ATTACH_MAX_SIZE) {
+      toast(`"${f.name}" أكبر من 10 ميجا — تم التخطي`, 'error');
+      continue;
+    }
+    pendingAttachments.push({
+      _file: f,
+      name: f.name,
+      size: f.size,
+      type: f.type || 'application/octet-stream',
+      progress: 0,
+      uploading: false,
+      url: null,
+    });
+  }
+  renderPendingAttachments();
+}
+
+function removePendingAttachment(idx){
+  pendingAttachments.splice(idx, 1);
+  renderPendingAttachments();
+}
+
+function renderPendingAttachments(){
+  const list = $('nt_attach_list');
+  if (!list) return;
+  if (!pendingAttachments.length) { list.innerHTML = ''; return; }
+  list.innerHTML = pendingAttachments.map((a, i) => {
+    const prog = a.uploading
+      ? `<div class="attach-progress"><div class="attach-progress-fill" style="width:${a.progress}%"></div></div>`
+      : `<span class="attach-item-size">${fmtSize(a.size)}</span>`;
+    return `
+      <div class="attach-item">
+        <span class="attach-item-icon">${attachTypeIcon(a.type, a.name)}</span>
+        <span class="attach-item-name">${_e(a.name)}</span>
+        ${prog}
+        <button class="attach-item-remove" onclick="removePendingAttachment(${i})" title="إزالة">×</button>
+      </div>`;
+  }).join('');
+}
+
+// Upload one file to Supabase Storage — returns public URL
+async function uploadOneAttachment(att, ticketNumber) {
+  att.uploading = true; att.progress = 10; renderPendingAttachments();
+
+  // Sanitize filename: keep extension, replace spaces/unicode
+  const ext = (att.name.match(/\.[a-zA-Z0-9]+$/) || [''])[0];
+  const safeBase = att.name.replace(ext,'')
+    .replace(/[^a-zA-Z0-9\u0600-\u06FF_-]+/g,'_').slice(0, 50) || 'file';
+  const path = `${ticketNumber || 'ticket'}/${Date.now()}_${safeBase}${ext}`;
+
+  const url = `${CFG.supabaseUrl}/storage/v1/object/ticket-attachments/${encodeURIComponent(path)}`;
+  att.progress = 40; renderPendingAttachments();
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      apikey: CFG.supabaseKey,
+      Authorization: `Bearer ${CFG.supabaseKey}`,
+      'Content-Type': att.type,
+      'x-upsert': 'true',
+    },
+    body: att._file,
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(()=>'');
+    throw new Error(`Upload failed (${res.status}): ${txt.slice(0,100)}`);
+  }
+  att.progress = 100;
+  att.url = `${CFG.supabaseUrl}/storage/v1/object/public/ticket-attachments/${encodeURIComponent(path)}`;
+  att.path = path;
+  att.uploading = false;
+  renderPendingAttachments();
+  return { name: att.name, size: att.size, type: att.type, url: att.url, path };
 }
 
 async function submitTicket() {
   const title    = $('nt_title').value.trim();
-  const category = $('nt_cat').value;
+  const dept     = $('nt_dept').value;
+  const reqtype  = $('nt_reqtype').value;
   const priority = $('nt_priority').value;
   const desc     = $('nt_desc').value.trim();
 
-  if (!title||!category||!desc) { toast('يرجى ملء جميع الحقول','error'); return; }
+  if (!title || !dept || !reqtype || !desc) {
+    toast('يرجى ملء جميع الحقول','error'); return;
+  }
 
-  const ticket = {
-    title, category, priority, description:desc,
-    status:'open', created_by:S.user.id, assigned_to:null,
-  };
+  const btn = $('nt_submit_btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'جارٍ الإرسال...'; }
 
   try {
-    const saved = await sbFetch('/tickets',{method:'POST',body:JSON.stringify(ticket)});
-    // Add to local state immediately for instant UI update (no refresh needed)
-    const newTicket = saved?.[0] ? { ...saved[0], comments: [] } : {
-      ...ticket,
-      id: 'local'+Date.now(),
-      ticket_number: 'GAS-'+new Date().getFullYear()+'-????',
-      created_at: new Date().toISOString(),
-      comments: []
+    // 1) Upload attachments first (if any)
+    const uploaded = [];
+    for (const att of pendingAttachments) {
+      try {
+        const info = await uploadOneAttachment(att);
+        uploaded.push(info);
+      } catch (e) {
+        toast(`فشل رفع "${att.name}": ${e.message}`, 'error');
+      }
+    }
+
+    // 2) Create the ticket record
+    const ticket = {
+      title,
+      description: desc,
+      priority,
+      status: 'open',
+      created_by: S.user.id,
+      assigned_to: null,
+      target_department: dept,
+      request_type: reqtype,
+      attachments: uploaded,
+      // Keep category for backward-compat: map department when it fits IT categories; else 'other'
+      category: 'other',
     };
+    const saved = await sbFetch('/tickets', { method:'POST', body: JSON.stringify(ticket) });
+    const newTicket = saved?.[0]
+      ? { ...saved[0], comments: [] }
+      : { ...ticket, id:'local'+Date.now(),
+          ticket_number:'GAS-'+new Date().getFullYear()+'-????',
+          created_at:new Date().toISOString(), comments:[] };
     S.tickets.unshift(newTicket);
 
-    // Notify IT admins and managers (excluding the creator) — strictly one notification per user
+    // 3) Notify: مديرين ومشرفين الإدارة المستهدفة (بس — الموظفين العاديين يشوفوا الطلبات open في قائمتهم)
     const seenIds = new Set();
     const toNotify = S.users.filter(u => {
-      if (u.role !== 'admin' && u.role !== 'manager') return false;
-      if (u.id === S.user.id) return false;  // don't notify the creator
-      if (seenIds.has(u.id)) return false;   // deduplicate by id
-      seenIds.add(u.id);
-      return true;
+      if (u.id === S.user.id) return false;
+      if (seenIds.has(u.id)) return false;
+      if (u.is_active === false) return false;
+      const sameDept = (u.department || '').trim() === dept.trim();
+      if (!sameDept) return false;
+      // دلوقتي الإشعارات تروح للقيادات في الإدارة فقط
+      const isLead = u.role === 'manager' || u.role === 'supervisor' || u.role === 'admin';
+      if (!isLead) return false;
+      seenIds.add(u.id); return true;
     });
-    await Promise.all(toNotify.map(u=>
-      sbFetch('/notifications',{method:'POST',body:JSON.stringify({
-        user_id:u.id,
-        title:`تيكت جديد: ${title}`,
-        body:`من ${S.user.name} — أولوية ${PRIO_L[priority]}`,
-        is_read:false
-      })}).catch(e=>{ console.warn('Notif failed', u.id, e.message); })
+    // Safety net: لو الإدارة مفيهاش قيادات، الإشعار يروح لكل الـ super_admins
+    const finalNotify = toNotify.length
+      ? toNotify
+      : S.users.filter(u => u.role === 'super_admin' && u.id !== S.user.id);
+
+    await Promise.all(finalNotify.map(u =>
+      sbFetch('/notifications', { method:'POST', body: JSON.stringify({
+        user_id: u.id,
+        title: `طلب جديد لإدارة ${dept}: ${title}`,
+        body:  `${reqtype} — من ${S.user.name} — أولوية ${PRIO_L[priority]}`,
+        is_read: false
+      })}).catch(e => { console.warn('Notif failed', u.id, e.message); })
     ));
 
     closeModal('newTicketModal');
-    toast(`تم إرسال التيكت ${newTicket.ticket_number || ''}`);
+    pendingAttachments = [];
+    toast(`تم إرسال الطلب ${newTicket.ticket_number || ''}`);
     refreshNavCounts();
     showPage('mytickets');
-  } catch(e){ toast('فشل الإرسال: '+e.message,'error'); }
+  } catch (e) {
+    toast('فشل الإرسال: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'إرسال الطلب'; }
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1153,7 +1598,8 @@ function renderUsers() {
 function renderUsersGrid() {
   const grid = $('usersGrid');
   const HIDDEN = ['ammar.admin'];
-  let list = S.users.filter(u => !HIDDEN.includes(u.username));
+  // Super admin يشوف كل المستخدمين، المدير يشوف بس موظفي إدارته
+  let list = visibleUsers().filter(u => !HIDDEN.includes(u.username));
 
   if (usersFilter.search) {
     const q = usersFilter.search.toLowerCase();
@@ -1175,7 +1621,12 @@ function renderUsersGrid() {
     const myT = S.tickets.filter(t=>t.created_by===u.id).length;
     const asgn = S.tickets.filter(t=>t.assigned_to===u.id).length;
     const res  = S.tickets.filter(t=>t.assigned_to===u.id&&['resolved','closed'].includes(t.status)).length;
-    const roleBadge = { employee:'b-emp', admin:'b-admin', manager:'b-mgr' }[u.role]||'b-emp';
+    const roleBadge = {
+      super_admin: 'b-mgr', manager:'b-mgr',
+      supervisor: 'b-admin', admin: 'b-admin',
+      employee: 'b-emp'
+    }[u.role] || 'b-emp';
+    const canEdit = Perm.canManageUser(u);
     return `
       <div class="user-card">
         <div class="uc-top">
@@ -1195,13 +1646,23 @@ function renderUsersGrid() {
           <span class="badge ${roleBadge}">${_e(ROLES[u.role]||u.role)}</span>
         </div>
         <div class="uc-actions">
-          <button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;" onclick="editUser('${u.id}')">تعديل</button>
-          <button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;border-color:var(--warning);color:var(--warning);" onclick="resetUserPassword('${u.id}','${u.name}')">🔑 تعيين كلمة مرور</button>
-          <button class="btn btn-danger" style="font-size:11px;padding:5px 10px;" onclick="deleteUser('${u.id}')">حذف</button>
+          ${canEdit ? `<button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;" onclick="editUser('${u.id}')">تعديل</button>` : ''}
+          ${canEdit ? `<button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;border-color:var(--warning);color:var(--warning);" onclick="resetUserPassword('${u.id}','${u.name.replace(/'/g,'&#39;')}')">🔑 تعيين كلمة مرور</button>` : ''}
+          ${Perm.isSuper() ? `<button class="btn btn-danger" style="font-size:11px;padding:5px 10px;" onclick="deleteUser('${u.id}')">حذف</button>` : ''}
         </div>
       </div>
     `;
   }).join('');
+}
+
+// Helper: populate the user modal's department dropdown from loaded map
+function populateUserDeptDropdown(selected) {
+  const sel = $('nu_dept');
+  if (!sel) return;
+  const opts = deptList();
+  sel.innerHTML = `<option value="">— اختر الإدارة —</option>` +
+    opts.map(d => `<option value="${_e(d)}" ${selected===d?'selected':''}>${_e(d)}</option>`).join('') +
+    (selected && !opts.includes(selected) ? `<option value="${_e(selected)}" selected>${_e(selected)} (مخصصة)</option>` : '');
 }
 
 function openNewUserModal() {
@@ -1210,9 +1671,18 @@ function openNewUserModal() {
   $('passRequired').textContent   = '*';
   $('nu_pass').required = true;
   $('statusField').style.display = 'none';
-  ['nu_name','nu_uname','nu_email','nu_pass','nu_dept','nu_phone'].forEach(id=>$(id).value='');
+  ['nu_name','nu_uname','nu_email','nu_pass','nu_phone'].forEach(id=>$(id).value='');
   $('nu_role').value   = 'employee';
   $('nu_active').value = 'true';
+  populateUserDeptDropdown('');
+  // Pre-lock the department for dept managers (they can only create users in their own dept)
+  if (Perm.isManager() && !Perm.isSuper()) {
+    const sel = $('nu_dept');
+    sel.value = Perm.myDept();
+    sel.disabled = true;
+  } else {
+    $('nu_dept').disabled = false;
+  }
   openModal('newUserModal');
 }
 
@@ -1228,7 +1698,8 @@ function editUser(id) {
   $('nu_email').value  = u.email||'';
   $('nu_pass').value   = '';
   $('nu_role').value   = u.role;
-  $('nu_dept').value   = u.department||'';
+  populateUserDeptDropdown(u.department||'');
+  $('nu_dept').disabled = Perm.isManager() && !Perm.isSuper();
   $('nu_phone').value  = u.phone||'';
   $('nu_active').value = String(u.is_active!==false);
   openModal('newUserModal');
@@ -1245,6 +1716,7 @@ async function saveUser() {
   const active= $('nu_active').value === 'true';
 
   if (!name||!uname) { toast('الاسم واسم المستخدم مطلوبان','error'); return; }
+  if (role !== 'super_admin' && !dept) { toast('يجب اختيار الإدارة لهذا الدور','error'); return; }
 
   // Protect developer account from any modification
   const PROTECTED = ['ammar.admin'];
@@ -1378,8 +1850,9 @@ async function doResetUserPassword() {
 //  REPORTS
 // ═══════════════════════════════════════════════════════
 function renderReports() {
-  const isManager = S.user.role === 'manager';
-  const tickets   = S.tickets;
+  const isLead  = Perm.isDeptLead() || Perm.isSuper();
+  // تقارير الـ super_admin شاملة، وتقارير الـ dept lead مقيدة بإدارته
+  const tickets = Perm.isSuper() ? S.tickets : visibleTickets();
 
   // ── حساب الشهر الحالي والشهر الماضي ─────────────────
   const now       = new Date();
@@ -1404,7 +1877,7 @@ function renderReports() {
   const monthColor = monthDiff>0?'#F87171':monthDiff<0?'#4ADE80':'var(--text-muted)';
 
   const _resetBtn = $('resetStatsBtn');
-  if (_resetBtn) _resetBtn.style.display = isManager ? '' : 'none';
+  if (_resetBtn) _resetBtn.style.display = Perm.isSuper() ? '' : 'none';
 
   // ── Stats row ──────────────────────────────────────────
   // stats cards — للكل
@@ -1421,9 +1894,9 @@ function renderReports() {
   ).join('');
   const statsHtml = '<div class="stats-row" style="margin-bottom:16px;">' + statsCards + '</div>';
 
-  // مقارنة الأشهر — للمدير فقط
+  // مقارنة الأشهر — للقيادات (مدير/مشرف/super_admin)
   let monthHtml = '';
-  if (isManager) {
+  if (isLead) {
     const mRows = [
       ['إجمالي التيكتات', thisMTotal, lastMTotal],
       ['محلولة', thisMonth.filter(t=>['resolved','closed'].includes(t.status)).length, lastMonth.filter(t=>['resolved','closed'].includes(t.status)).length],
@@ -1447,8 +1920,8 @@ function renderReports() {
       '<tbody>' + mRows + '</tbody></table></div>';
   }
 
-  // ── Admin view ─────────────────────────────────────────
-  if (!isManager) {
+  // ── View للمشرف (supervisor/admin) — يشوف أدائه الشخصي ─
+  if (Perm.isSupervisor() && !Perm.isManager() && !Perm.isSuper()) {
     const myAssigned = tickets.filter(t=>t.assigned_to===S.user.id).length;
     const myDone     = tickets.filter(t=>t.assigned_to===S.user.id&&['resolved','closed'].includes(t.status)).length;
     const myOpen     = tickets.filter(t=>t.assigned_to===S.user.id&&['open','assigned','in_progress'].includes(t.status)).length;
@@ -1474,32 +1947,41 @@ function renderReports() {
         </table>
       </div>
       <div class="tbl-wrap">
-        <div class="tbl-head"><span class="tbl-head-title">توزيع تيكتاتي حسب الفئة</span></div>
+        <div class="tbl-head"><span class="tbl-head-title">توزيع تيكتاتي حسب نوع الطلب</span></div>
         <table class="data-tbl">
-          <thead><tr><th>الفئة</th><th>إجمالي</th><th>مفتوح</th><th>محلول</th></tr></thead>
-          <tbody>${Object.entries(CAT_L).map(([k,v])=>{
-            const cat=tickets.filter(t=>t.assigned_to===S.user.id&&t.category===k);
-            if(!cat.length) return '';
-            return `<tr>
-              <td>${v}</td><td>${cat.length}</td>
-              <td>${cat.filter(t=>['open','assigned','in_progress'].includes(t.status)).length}</td>
-              <td>${cat.filter(t=>['resolved','closed'].includes(t.status)).length}</td>
-            </tr>`;
-          }).join('')||'<tr><td colspan="4"><div class="empty-state"><p>لا توجد تيكتات معينة لك</p></div></td></tr>'}
+          <thead><tr><th>نوع الطلب</th><th>إجمالي</th><th>مفتوح</th><th>محلول</th></tr></thead>
+          <tbody>${(() => {
+            const mine = tickets.filter(t => t.assigned_to === S.user.id);
+            const groups = {};
+            mine.forEach(t => {
+              const k = t.request_type || t.target_department || CAT_L[t.category] || t.category || 'غير محدد';
+              (groups[k] = groups[k] || []).push(t);
+            });
+            const rows = Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);
+            if (!rows.length) return '<tr><td colspan="4"><div class="empty-state"><p>لا توجد تيكتات معينة لك</p></div></td></tr>';
+            return rows.map(([k,arr]) => `<tr>
+              <td>${_e(k)}</td><td>${arr.length}</td>
+              <td>${arr.filter(t=>['open','assigned','in_progress'].includes(t.status)).length}</td>
+              <td>${arr.filter(t=>['resolved','closed'].includes(t.status)).length}</td>
+            </tr>`).join('');
+          })()}
           </tbody>
         </table>
       </div>`;
     return;
   }
 
-  // ── Manager view ───────────────────────────────────────
-  const itUsers = S.users.filter(u=>u.role==='admin');
-  const perf    = itUsers.map(u=>({
-    name: u.name,
-    asgn: tickets.filter(t=>t.assigned_to===u.id).length,
-    done: tickets.filter(t=>t.assigned_to===u.id&&['resolved','closed'].includes(t.status)).length,
-    rate: 0
-  })).map(p=>({...p, rate:p.asgn?Math.round(p.done/p.asgn*100):0}));
+  // ── Manager / Super Admin view: أداء فريق الإدارة (أو كل النظام) ─
+  // للمدير: بس موظفي إدارته. للـ super_admin: كل الموظفين اللي معلقين طلبات
+  const teamUsers = Perm.isSuper()
+    ? S.users.filter(u => u.is_active !== false)
+    : S.users.filter(u => u.department === Perm.myDept() && u.is_active !== false);
+  const perf = teamUsers.map(u=>{
+    const asgn = tickets.filter(t=>t.assigned_to===u.id).length;
+    const done = tickets.filter(t=>t.assigned_to===u.id&&['resolved','closed'].includes(t.status)).length;
+    return { name:u.name, role:u.role, asgn, done, rate: asgn?Math.round(done/asgn*100):0 };
+  }).filter(p => p.asgn > 0)  // نعرض بس اللي عليه تيكتات
+    .sort((a,b) => b.asgn - a.asgn);
 
   $('reportsContent').innerHTML = statsHtml + monthHtml + `
     <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
@@ -1509,11 +1991,12 @@ function renderReports() {
       </button>
     </div>
     <div class="tbl-wrap" style="margin-bottom:20px;">
-      <div class="tbl-head"><span class="tbl-head-title">أداء فريق IT</span></div>
+      <div class="tbl-head"><span class="tbl-head-title">${Perm.isSuper()?'أداء فريق العمل':`أداء فريق ${Perm.myDept()||'الإدارة'}`}</span></div>
       <table class="data-tbl">
-        <thead><tr><th>الفني</th><th>معين له</th><th>محلولة</th><th>معدل الحل</th><th>الأداء</th></tr></thead>
+        <thead><tr><th>الموظف</th><th>الدور</th><th>معين له</th><th>محلولة</th><th>معدل الحل</th><th>الأداء</th></tr></thead>
         <tbody>${perf.length?perf.map(p=>`<tr>
           <td><strong>${_e(p.name)}</strong></td>
+          <td style="font-size:11px;color:var(--text-muted);">${_e(ROLES[p.role]||p.role)}</td>
           <td>${p.asgn}</td><td>${p.done}</td>
           <td style="font-family:var(--font-mono);">${p.rate}%</td>
           <td style="min-width:140px;">
@@ -1521,23 +2004,30 @@ function renderReports() {
               <div class="sla-fill ${p.rate>=80?'sla-ok':p.rate>=50?'sla-warn':'sla-crit'}" style="width:${p.rate}%"></div>
             </div>
           </td>
-        </tr>`).join(''):'<tr><td colspan="5"><div class="empty-state"><p>لا يوجد فريق IT</p></div></td></tr>'}
+        </tr>`).join(''):'<tr><td colspan="6"><div class="empty-state"><p>لا توجد بيانات أداء</p></div></td></tr>'}
         </tbody>
       </table>
     </div>
     <div class="tbl-wrap">
-      <div class="tbl-head"><span class="tbl-head-title">التوزيع حسب الفئة</span></div>
+      <div class="tbl-head"><span class="tbl-head-title">التوزيع حسب الإدارة</span></div>
       <table class="data-tbl">
-        <thead><tr><th>الفئة</th><th>إجمالي</th><th>مفتوح</th><th>محلول</th></tr></thead>
-        <tbody>${Object.entries(CAT_L).map(([k,v])=>{
-          const cat=tickets.filter(t=>t.category===k);
-          if(!cat.length) return '';
-          return `<tr>
-            <td>${v}</td><td>${cat.length}</td>
-            <td>${cat.filter(t=>['open','assigned'].includes(t.status)).length}</td>
-            <td>${cat.filter(t=>['resolved','closed'].includes(t.status)).length}</td>
-          </tr>`;
-        }).join('')}</tbody>
+        <thead><tr><th>الإدارة</th><th>إجمالي</th><th>مفتوح</th><th>قيد التنفيذ</th><th>محلول</th></tr></thead>
+        <tbody>${(() => {
+          const groups = {};
+          tickets.forEach(t => {
+            const k = t.target_department || CAT_L[t.category] || t.category || 'غير محدد';
+            (groups[k] = groups[k] || []).push(t);
+          });
+          const rows = Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);
+          if (!rows.length) return '<tr><td colspan="5"><div class="empty-state"><p>لا توجد تيكتات</p></div></td></tr>';
+          return rows.map(([k,arr])=>`<tr>
+            <td><strong>${_e(k)}</strong></td>
+            <td>${arr.length}</td>
+            <td>${arr.filter(t=>['open','assigned'].includes(t.status)).length}</td>
+            <td>${arr.filter(t=>t.status==='in_progress').length}</td>
+            <td>${arr.filter(t=>['resolved','closed'].includes(t.status)).length}</td>
+          </tr>`).join('');
+        })()}</tbody>
       </table>
     </div>`;
 }
@@ -1562,7 +2052,7 @@ async function confirmResetStats() {
 // ═══════════════════════════════════════════════════════
 async function renderAuditLog() {
   // Guard: only manager role can access audit log
-  if (S.user.role !== 'manager') { showPage('dashboard'); return; }
+  if (!Perm.isSuper()) { showPage('dashboard'); return; }
 
   const ACTION_LABELS = {
     delete_user:   '🗑️ حذف مستخدم',
@@ -1896,11 +2386,16 @@ function exportCSV() {
 
 function exportExcel() {
   // بناء XML بصيغة Excel
-  const headers = ['رقم التيكت','العنوان','مقدم الطلب','القسم','الأولوية','الحالة','المعين','التاريخ'];
+  const headers = ['رقم التيكت','العنوان','الإدارة المسؤولة','نوع الطلب','مقدم الطلب','قسم المقدم','الأولوية','الحالة','المعين','المرفقات','التاريخ'];
   const rows = S.tickets.map(t=>[
-    t.ticket_number, t.title, uname(t.created_by), udept(t.created_by),
+    t.ticket_number, t.title,
+    t.target_department || (CAT_L[t.category]||t.category||'—'),
+    t.request_type || '—',
+    uname(t.created_by), udept(t.created_by),
     PRIO_L[t.priority]||t.priority, STATUS_L[t.status]||t.status,
-    t.assigned_to ? uname(t.assigned_to) : '—', _d(t.created_at)
+    t.assigned_to ? uname(t.assigned_to) : '—',
+    (t.attachments && t.attachments.length) ? `${t.attachments.length} ملف` : '—',
+    _d(t.created_at)
   ]);
 
   const esc = v => String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1930,10 +2425,303 @@ function exportExcel() {
 }
 
 // ═══════════════════════════════════════════════════════
+//  ROLES & DEPARTMENTS ASSIGNMENT (Super Admin only)
+//  صفحة مركزية لتحديد دور وإدارة كل مستخدم
+// ═══════════════════════════════════════════════════════
+async function renderRoles() {
+  if (!Perm.isSuper()) { showPage('dashboard'); return; }
+  await loadDepartmentMap();  // نتأكد إن القائمة محدثة
+
+  const host = $('rolesContent');
+  if (!host) return;
+
+  // دروب داون الأدوار
+  const roleOptions = (curr) => {
+    const opts = [
+      ['super_admin','مدير النظام (Super Admin)'],
+      ['manager',    'مدير إدارة'],
+      ['supervisor', 'مشرف إدارة'],
+      ['employee',   'موظف'],
+    ];
+    // admin القديم نخليه متاح كـ legacy option
+    if (curr === 'admin') opts.push(['admin','IT Admin (قديم)']);
+    return opts.map(([v,l]) => `<option value="${v}" ${curr===v?'selected':''}>${_e(l)}</option>`).join('');
+  };
+
+  // دروب داون الإدارات
+  const depts = deptList();
+  const deptOptions = (curr) =>
+    `<option value="">— بلا إدارة —</option>` +
+    depts.map(d => `<option value="${_e(d)}" ${curr===d?'selected':''}>${_e(d)}</option>`).join('') +
+    (curr && !depts.includes(curr) && curr !== 'إدارة النظام'
+      ? `<option value="${_e(curr)}" selected>${_e(curr)} (مخصصة)</option>` : '');
+
+  const users = [...S.users].sort((a,b) => {
+    const rr = r => r==='super_admin'?1 : r==='manager'?2 : (r==='supervisor'||r==='admin')?3 : 4;
+    return rr(a.role) - rr(b.role) || (a.department||'').localeCompare(b.department||'') || (a.name||'').localeCompare(b.name||'');
+  });
+
+  // ملخص حسب الإدارة
+  const summary = depts.map(d => {
+    const staff = S.users.filter(u => u.department === d && u.is_active !== false);
+    return {
+      dept: d,
+      managers:    staff.filter(u => u.role === 'manager').length,
+      supervisors: staff.filter(u => u.role === 'supervisor' || u.role === 'admin').length,
+      employees:   staff.filter(u => u.role === 'employee').length,
+      total: staff.length,
+    };
+  });
+
+  host.innerHTML = `
+    <div class="dc" style="margin-bottom:16px;">
+      <div class="dc-title">نظرة عامة على القوى العاملة</div>
+      <div style="overflow-x:auto;">
+        <table class="data-tbl">
+          <thead><tr><th>الإدارة</th><th>مديرين</th><th>مشرفين</th><th>موظفين</th><th>الإجمالي</th><th>الحالة</th></tr></thead>
+          <tbody>
+            ${summary.map(s => `
+              <tr>
+                <td><strong>${_e(s.dept)}</strong></td>
+                <td>${s.managers}</td>
+                <td>${s.supervisors}</td>
+                <td>${s.employees}</td>
+                <td>${s.total}</td>
+                <td>${
+                  s.managers === 0 && s.total > 0 ? '<span style="color:var(--warning);font-size:11px;">⚠️ بلا مدير</span>' :
+                  s.total === 0 ? '<span style="color:var(--danger);font-size:11px;">🚫 فارغة</span>' :
+                  '<span style="color:var(--success);font-size:11px;">✅ جاهزة</span>'
+                }</td>
+              </tr>`).join('') || '<tr><td colspan="6"><div class="empty-state"><p>لا توجد إدارات</p></div></td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tbl-wrap">
+      <div class="tbl-head">
+        <span class="tbl-head-title">تحديد الأدوار والإدارات — ${users.length} مستخدم</span>
+        <input class="s-input" placeholder="بحث بالاسم..." oninput="filterRolesTable(this.value)" style="width:200px;">
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="data-tbl" id="rolesTable">
+          <thead><tr>
+            <th>الاسم</th>
+            <th>اسم المستخدم</th>
+            <th>الدور</th>
+            <th>الإدارة</th>
+            <th>نشط</th>
+            <th>حفظ</th>
+          </tr></thead>
+          <tbody>
+            ${users.map(u => {
+              const isSelf = u.id === S.user.id;
+              const isMaster = u.username === 'ammar.admin';
+              return `
+              <tr data-user-name="${_e(u.name.toLowerCase())}">
+                <td><strong>${_e(u.name)}</strong>${isMaster?' <span style="color:var(--gold);font-size:10px;">👑</span>':''}</td>
+                <td style="font-family:var(--font-mono);font-size:11px;">${_e(u.username)}</td>
+                <td>
+                  <select class="fsel" id="role_role_${u.id}" ${isMaster?'disabled':''} style="min-width:140px;">
+                    ${roleOptions(u.role)}
+                  </select>
+                </td>
+                <td>
+                  <select class="fsel" id="role_dept_${u.id}" ${isMaster?'disabled':''} style="min-width:140px;">
+                    ${deptOptions(u.department)}
+                  </select>
+                </td>
+                <td>
+                  <input type="checkbox" id="role_active_${u.id}" ${u.is_active!==false?'checked':''} ${(isMaster||isSelf)?'disabled':''}>
+                </td>
+                <td>
+                  <button class="btn btn-gold" style="padding:4px 12px;font-size:11px;" ${isMaster?'disabled':''}
+                    onclick="saveUserRole('${u.id}')">حفظ</button>
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <span style="color:var(--text-muted);font-size:12px;">💡 حسابك كمدير النظام محمي ولا يمكن تعديله من هنا</span>
+        <button class="btn btn-gold" onclick="saveAllRoles()">💾 حفظ كل التغييرات دفعة واحدة</button>
+      </div>
+    </div>
+  `;
+}
+
+function filterRolesTable(q) {
+  const query = (q||'').toLowerCase().trim();
+  document.querySelectorAll('#rolesTable tbody tr').forEach(tr => {
+    const name = tr.dataset.userName || '';
+    tr.style.display = (!query || name.includes(query)) ? '' : 'none';
+  });
+}
+
+async function saveUserRole(userId) {
+  const u = S.users.find(x => x.id === userId);
+  if (!u) return;
+  const role = $(`role_role_${userId}`)?.value;
+  const dept = $(`role_dept_${userId}`)?.value || '';
+  const active = $(`role_active_${userId}`)?.checked !== false;
+  if (!role) { toast('اختر الدور','error'); return; }
+  if (role !== 'super_admin' && !dept) {
+    toast('لازم تحدد الإدارة لهذا الدور','error');
+    return;
+  }
+  try {
+    await sbFetch(`/users?id=eq.${userId}`, {
+      method:'PATCH',
+      body: JSON.stringify({ role, department: dept, is_active: active, role_updated_at: new Date().toISOString() })
+    });
+    // تحديث الـ state المحلي
+    u.role = role; u.department = dept; u.is_active = active;
+    toast(`تم تحديث ${u.name}`);
+  } catch(e) { toast('فشل الحفظ: '+e.message, 'error'); }
+}
+
+async function saveAllRoles() {
+  showConfirm('💾','حفظ كل التغييرات','سيتم حفظ جميع التعديلات المعروضة لكل المستخدمين دفعة واحدة.\nمتابعة؟',
+    async () => {
+      let ok = 0, fail = 0;
+      for (const u of S.users) {
+        if (u.username === 'ammar.admin') continue;
+        const role = $(`role_role_${u.id}`)?.value;
+        const dept = $(`role_dept_${u.id}`)?.value || '';
+        const active = $(`role_active_${u.id}`)?.checked !== false;
+        if (!role) continue;
+        // تخطي اللي مفيش فيه تغيير
+        if (u.role === role && (u.department||'') === dept && (u.is_active!==false) === active) continue;
+        try {
+          await sbFetch(`/users?id=eq.${u.id}`, {
+            method:'PATCH',
+            body: JSON.stringify({ role, department: dept, is_active: active, role_updated_at: new Date().toISOString() })
+          });
+          u.role = role; u.department = dept; u.is_active = active;
+          ok++;
+        } catch { fail++; }
+      }
+      toast(`تم حفظ ${ok} تحديث${fail?` · فشل ${fail}`:''}`, fail?'error':'success');
+      await renderRoles();
+    });
+}
+
+// ═══════════════════════════════════════════════════════
+//  DEPARTMENT / REQUEST-TYPE MAP (Super Admin only)
+//  صفحة مركزية لتحديد دور وإدارة كل مستخدم
+// ═══════════════════════════════════════════════════════
+async function renderDeptMap() {
+  if (!Perm.isSuper()) { showPage('dashboard'); return; }
+  // Always re-load from DB to reflect any changes
+  await loadDepartmentMap();
+
+  const host = $('deptmapContent');
+  if (!host) return;
+
+  const depts = deptList();
+  host.innerHTML = `
+    <div class="dc" style="margin-bottom:16px;">
+      <div class="dc-title">إضافة إدارة جديدة</div>
+      <div class="map-add-row">
+        <input class="fi" id="newDeptName" placeholder="اسم الإدارة (مثال: التسويق)">
+        <button class="btn btn-gold" onclick="addDepartment()">+ إضافة</button>
+      </div>
+    </div>
+
+    <div class="map-grid">
+      ${depts.length === 0 ? `<div class="empty-state"><p>لا توجد إدارات — أضف واحدة لتبدأ</p></div>` : ''}
+      ${depts.map(d => {
+        const types = typesOf(d);
+        return `
+          <div class="map-dept-card">
+            <div class="map-dept-head">
+              <span class="map-dept-name">🏢 ${_e(d)} <span style="color:var(--text-muted);font-weight:400;font-size:11px;">(${types.length} نوع)</span></span>
+              <button class="btn btn-ghost" style="border-color:var(--danger);color:var(--danger);padding:4px 10px;font-size:11px;" onclick="deleteDepartment('${_e(d)}')">حذف الإدارة</button>
+            </div>
+
+            <div class="map-types">
+              ${types.map(t => `
+                <span class="map-type-chip">
+                  ${_e(t)}
+                  <button onclick="deleteRequestType('${_e(d)}','${_e(t).replace(/'/g,"\\'")}')" title="حذف">×</button>
+                </span>
+              `).join('') || '<span style="color:var(--text-muted);font-size:12px;">لا توجد أنواع طلبات — أضف أول نوع</span>'}
+            </div>
+
+            <div class="map-add-row">
+              <input class="fi" id="newType_${btoa(unescape(encodeURIComponent(d))).replace(/=/g,'')}" placeholder="نوع طلب جديد لـ ${_e(d)}">
+              <button class="btn btn-gold" onclick="addRequestType('${_e(d)}')">+ إضافة نوع</button>
+            </div>
+          </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+function deptInputId(dept){ return 'newType_'+btoa(unescape(encodeURIComponent(dept))).replace(/=/g,''); }
+
+async function addDepartment() {
+  const name = ($('newDeptName')?.value || '').trim();
+  if (!name) { toast('اكتب اسم الإدارة','error'); return; }
+  if (deptList().includes(name)) { toast('الإدارة موجودة بالفعل','error'); return; }
+  // Seed with a default "أخرى" type
+  try {
+    await sbFetch('/department_requests', {
+      method:'POST',
+      body: JSON.stringify({ department: name, request_type: 'أخرى', sort_order: 99, is_active: true })
+    });
+    toast(`تمت إضافة الإدارة "${name}"`);
+    await renderDeptMap();
+  } catch(e) { toast('فشل الإضافة: '+e.message, 'error'); }
+}
+
+async function deleteDepartment(dept) {
+  showConfirm('⚠️','حذف الإدارة',
+    `سيتم حذف الإدارة "${dept}" وجميع أنواع الطلبات المرتبطة بها.\nالتيكتات الموجودة لن تُحذف — ستحتفظ بالإدارة القديمة كنص.\nهل تريد المتابعة؟`,
+    async () => {
+      try {
+        await sbFetch(`/department_requests?department=eq.${encodeURIComponent(dept)}`, { method:'DELETE', headers: { Prefer:'return=minimal' } });
+        toast(`تم حذف الإدارة "${dept}"`);
+        await renderDeptMap();
+      } catch(e) { toast('فشل الحذف: '+e.message, 'error'); }
+    });
+}
+
+async function addRequestType(dept) {
+  const id = deptInputId(dept);
+  const val = ($(id)?.value || '').trim();
+  if (!val) { toast('اكتب نوع الطلب','error'); return; }
+  if (typesOf(dept).includes(val)) { toast('النوع موجود بالفعل','error'); return; }
+  try {
+    const nextOrder = (typesOf(dept).length + 1) * 10;
+    await sbFetch('/department_requests', {
+      method:'POST',
+      body: JSON.stringify({ department: dept, request_type: val, sort_order: nextOrder, is_active: true })
+    });
+    toast(`تمت إضافة "${val}" لـ ${dept}`);
+    await renderDeptMap();
+  } catch(e) { toast('فشل الإضافة: '+e.message, 'error'); }
+}
+
+async function deleteRequestType(dept, type) {
+  showConfirm('🗑️','حذف نوع الطلب',
+    `سيتم حذف "${type}" من إدارة "${dept}".\nالتيكتات الموجودة لن تتأثر.\nمتابعة؟`,
+    async () => {
+      try {
+        const q = `/department_requests?department=eq.${encodeURIComponent(dept)}&request_type=eq.${encodeURIComponent(type)}`;
+        await sbFetch(q, { method:'DELETE', headers: { Prefer:'return=minimal' } });
+        toast(`تم الحذف`);
+        await renderDeptMap();
+      } catch(e) { toast('فشل الحذف: '+e.message, 'error'); }
+    });
+}
+
+// ═══════════════════════════════════════════════════════
 //  ARCHIVE
 // ═══════════════════════════════════════════════════════
 function renderArchive() {
-  if (S.user.role !== 'manager') { showPage('dashboard'); return; }
+  if (!Perm.isSuper()) { showPage('dashboard'); return; }
 
   const archived = S.tickets.filter(t=>t.status==='archived');
 
