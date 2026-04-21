@@ -170,6 +170,7 @@ const Perm = {
       case 'dashboard':  return true;
       case 'mytickets':  return true;
       case 'profile':    return true;
+      case 'detail':     return true;
       case 'alltickets': return Perm.isDeptLead() || Perm.isSuper();
       case 'reports':    return Perm.isDeptLead() || Perm.isSuper();
       case 'users':      return Perm.isManager() || Perm.isSuper();
