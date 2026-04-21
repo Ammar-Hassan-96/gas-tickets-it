@@ -541,14 +541,19 @@ async function loadNotifications() {
 async function loadDepartmentMap() {
   try {
     const rows = await sbFetch('/department_requests?is_active=eq.true&order=department,sort_order');
-    if (!rows || !rows.length) { DEPT_MAP = { ...DEFAULT_DEPT_MAP }; return; }
+    if (!rows || !rows.length) {
+      console.warn('[DEPT] department_requests جدول فاضي — استخدام الخريطة الافتراضية');
+      DEPT_MAP = { ...DEFAULT_DEPT_MAP };
+      return;
+    }
     const map = {};
     rows.forEach(r => {
       if (!map[r.department]) map[r.department] = [];
       map[r.department].push(r.request_type);
     });
     DEPT_MAP = map;
-  } catch {
+  } catch (e) {
+    console.warn('[DEPT] فشل جلب خريطة الإدارات — استخدام الافتراضية:', e.message);
     DEPT_MAP = { ...DEFAULT_DEPT_MAP };
   }
 }
@@ -1656,9 +1661,13 @@ function renderUsersGrid() {
 }
 
 // Helper: populate the user modal's department dropdown from loaded map
-function populateUserDeptDropdown(selected) {
+async function populateUserDeptDropdown(selected) {
   const sel = $('nu_dept');
   if (!sel) return;
+  // Safety: لو القائمة فاضية لأي سبب، نعيد تحميلها من الـ DB
+  if (!deptList().length) {
+    await loadDepartmentMap();
+  }
   const opts = deptList();
   sel.innerHTML = `<option value="">— اختر الإدارة —</option>` +
     opts.map(d => `<option value="${_e(d)}" ${selected===d?'selected':''}>${_e(d)}</option>`).join('') +
@@ -1674,14 +1683,17 @@ function openNewUserModal() {
   ['nu_name','nu_uname','nu_email','nu_pass','nu_phone'].forEach(id=>$(id).value='');
   $('nu_role').value   = 'employee';
   $('nu_active').value = 'true';
-  populateUserDeptDropdown('');
+  populateUserDeptDropdown('');  // async — بس مش محتاج await هنا (الـ modal لسه بيفتح)
   // Pre-lock the department for dept managers (they can only create users in their own dept)
   if (Perm.isManager() && !Perm.isSuper()) {
-    const sel = $('nu_dept');
-    sel.value = Perm.myDept();
-    sel.disabled = true;
+    // ننتظر لحظة صغيرة لتأمين تحميل الدروب داون قبل ما نقفله
+    setTimeout(() => {
+      const sel = $('nu_dept');
+      if (sel) { sel.value = Perm.myDept(); sel.disabled = true; }
+    }, 50);
   } else {
-    $('nu_dept').disabled = false;
+    const sel = $('nu_dept');
+    if (sel) sel.disabled = false;
   }
   openModal('newUserModal');
 }
@@ -1699,7 +1711,10 @@ function editUser(id) {
   $('nu_pass').value   = '';
   $('nu_role').value   = u.role;
   populateUserDeptDropdown(u.department||'');
-  $('nu_dept').disabled = Perm.isManager() && !Perm.isSuper();
+  setTimeout(() => {
+    const sel = $('nu_dept');
+    if (sel) sel.disabled = Perm.isManager() && !Perm.isSuper();
+  }, 50);
   $('nu_phone').value  = u.phone||'';
   $('nu_active').value = String(u.is_active!==false);
   openModal('newUserModal');
