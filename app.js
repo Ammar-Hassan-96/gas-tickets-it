@@ -860,25 +860,50 @@ function renderDashCharts(tickets) {
 
   } // end else (tickets exist)
 
-  // Recent tickets table
+  // Recent tickets table — نسخة كاملة بكل الأعمدة
   const recent = [...myTickets()].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,5);
   const recentHtml = `
     <div class="chart-card c12">
       <div class="ch-head">
         <div class="ch-title">آخر التيكتات</div>
-        <button class="btn btn-ghost" style="padding:6px 12px;font-size:12px;" onclick="showPage('${S.user.role==='employee'?'mytickets':'alltickets'}')">عرض الكل</button>
+        <button class="btn btn-ghost" style="padding:6px 12px;font-size:12px;" onclick="showPage('${Perm.isEmployee()?'mytickets':'alltickets'}')">عرض الكل</button>
       </div>
       <div style="overflow-x:auto;">
         <table class="data-tbl">
-          <thead><tr><th>رقم التيكت</th><th>العنوان</th><th>الأولوية</th><th>الحالة</th><th>التاريخ</th></tr></thead>
-          <tbody>${recent.length ? recent.map(t=>`
+          <thead><tr>
+            <th>الرقم</th>
+            <th>العنوان</th>
+            <th>الإدارة المستهدفة</th>
+            <th>نوع الطلب</th>
+            <th>الأولوية</th>
+            <th>الحالة</th>
+            <th>المعين</th>
+            <th>التاريخ</th>
+          </tr></thead>
+          <tbody>${recent.length ? recent.map(t=>{
+            const deptCell = t.target_department
+              ? `<span class="dept-chip">${_e(t.target_department)}</span>`
+              : `<span style="color:var(--text-muted);">${_e(CAT_L[t.category]||t.category||'—')}</span>`;
+            const reqTypeCell = t.request_type
+              ? `<span class="reqtype-chip">${_e(t.request_type)}</span>`
+              : '<span style="color:var(--text-muted);">—</span>';
+            const assignedCell = t.assigned_to
+              ? `<span style="font-size:12px;">${_e(uname(t.assigned_to))}</span>`
+              : '<span style="color:var(--text-muted);font-size:11px;">غير معين</span>';
+            const attachTag = (t.attachments && t.attachments.length)
+              ? `<span style="font-size:10px;color:var(--gold);margin-inline-start:6px;">📎 ${t.attachments.length}</span>` : '';
+            return `
             <tr onclick="openTicketDetail('${t.id}')">
               <td><span class="tnum">${_e(t.ticket_number)}</span></td>
-              <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}</td>
+              <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}${attachTag}</td>
+              <td>${deptCell}</td>
+              <td>${reqTypeCell}</td>
               <td>${pbadge(t.priority)}</td>
               <td>${sbadge(t.status)}</td>
+              <td>${assignedCell}</td>
               <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
-            </tr>`).join('') : '<tr><td colspan="5"><div class="empty-state"><p>لا توجد تيكتات بعد</p></div></td></tr>'}
+            </tr>`;
+          }).join('') : '<tr><td colspan="8"><div class="empty-state"><p>لا توجد تيكتات بعد</p></div></td></tr>'}
           </tbody>
         </table>
       </div>
