@@ -180,6 +180,7 @@ canSeeTicket: (t) => {
   // ── الصفحات المسموح بها ──
   canSeePage: (page) => {
     switch (page) {
+      case 'detail': return true;
       case 'dashboard':  return true;
       case 'mytickets':  return true;
       case 'profile':    return true;
