@@ -95,11 +95,17 @@ const Perm = {
   // هل ده صاحب صلاحيات قيادية في إدارته؟ (مدير أو مشرف)
   isDeptLead: () => Perm.isManager() || Perm.isSupervisor(),
 
-  // الإدارة اللي المستخدم بيتبعها
+  // الإدارة اللي المستخدم بيتبعها (مع trim وحماية)
   myDept: () => (S.user?.department || '').trim(),
 
-  // هل ده مستخدم تابع لنفس إدارة الطلب المستهدفة؟
-  sameDeptAs: (t) => Perm.myDept() && Perm.myDept() === (t.target_department || '').trim(),
+  // هل ده مستخدم تابع لنفس إدارة الطلب المستهدفة؟ (مقارنة آمنة)
+  sameDeptAs: (t) => {
+    const mine = Perm.myDept();
+    const target = (t?.target_department || '').trim();
+    if (!mine || !target) return false;
+    // مقارنة case-insensitive كمان عشان الأمان (CRM vs crm)
+    return mine === target || mine.toLowerCase() === target.toLowerCase();
+  },
 
   // ── رؤية الطلبات ──
   // هل المستخدم يقدر يشوف تفاصيل التيكت ده؟
@@ -950,7 +956,6 @@ function renderAllTickets() {
   const inputs = document.querySelectorAll('#page-alltickets .s-input, #page-alltickets .s-select');
   inputs.forEach(el => { el.value = ''; });
 
-  // تنبيه للـ dept-lead لو مش متعين له إدارة (مشكلة شائعة بعد الـ migration)
   const banner = $('allTicketsBanner');
   if (banner) {
     if (!Perm.isSuper() && Perm.isDeptLead() && !Perm.myDept()) {
@@ -958,6 +963,28 @@ function renderAllTickets() {
         <div style="background:rgba(251,191,36,0.12);border:1px solid var(--warning);border-radius:8px;padding:12px 16px;margin-bottom:12px;font-size:13px;color:var(--warning);">
           ⚠️ حسابك غير مرتبط بأي إدارة. يرجى التواصل مع مدير النظام لتحديد إدارتك من صفحة "الأدوار".
         </div>`;
+    } else if (!Perm.isSuper() && Perm.isDeptLead() && Perm.myDept()) {
+      // تشخيص ذكي: هل في طلبات target_department مشابه لكن مش مطابق تماماً؟
+      const mine = Perm.myDept();
+      const mineLower = mine.toLowerCase();
+      const mineNoSpace = mine.replace(/\s+/g,'');
+      const suspiciousTickets = S.tickets.filter(t => {
+        const target = (t.target_department || '').trim();
+        if (!target || target === mine) return false;
+        return target.toLowerCase() === mineLower
+            || target.replace(/\s+/g,'') === mineNoSpace;
+      });
+      if (suspiciousTickets.length > 0) {
+        const samples = [...new Set(suspiciousTickets.map(t => `"${t.target_department}"`))].slice(0,3).join(' · ');
+        banner.innerHTML = `
+          <div style="background:rgba(239,68,68,0.10);border:1px solid var(--danger);border-radius:8px;padding:12px 16px;margin-bottom:12px;font-size:13px;color:var(--danger);">
+            ⚠️ <strong>عدم تطابق في اسم الإدارة</strong><br>
+            إدارتك المسجلة: <strong>"${_e(mine)}"</strong> · التيكتات مسجلة باسم: ${_e(samples)}<br>
+            <span style="font-size:12px;">يوجد ${suspiciousTickets.length} طلب لإدارتك بأسماء مختلفة قليلاً. اطلب من مدير النظام تشغيل migration v3 لإصلاح البيانات.</span>
+          </div>`;
+      } else {
+        banner.innerHTML = '';
+      }
     } else {
       banner.innerHTML = '';
     }
@@ -969,8 +996,10 @@ function renderAllTickets() {
     if (Perm.isSuper()) {
       deptSel.innerHTML = `<option value="">كل الإدارات</option>` +
         deptList().map(d => `<option value="${_e(d)}">${_e(d)}</option>`).join('');
+      deptSel.hidden = false;
       deptSel.style.display = '';
     } else {
+      deptSel.hidden = true;
       deptSel.style.display = 'none';
     }
   }
@@ -1611,7 +1640,7 @@ async function submitTicket() {
       }
     }
 
-    // 2) Create the ticket record
+    // 2) Create the ticket record (نحفظ الإدارة بـ trim مضمون)
     const ticket = {
       title,
       description: desc,
@@ -1619,10 +1648,10 @@ async function submitTicket() {
       status: 'open',
       created_by: S.user.id,
       assigned_to: null,
-      target_department: dept,
-      request_type: reqtype,
+      target_department: (dept || '').trim(),
+      request_type: (reqtype || '').trim(),
       attachments: uploaded,
-      // Keep category for backward-compat: map department when it fits IT categories; else 'other'
+      // Keep category for backward-compat
       category: 'other',
     };
     const saved = await sbFetch('/tickets', { method:'POST', body: JSON.stringify(ticket) });
