@@ -52,10 +52,10 @@ const ROLES = {
   admin:       'IT Admin',       // legacy — يُعامل كـ supervisor
   employee:    'موظف',
 };
-const STATUS_L = { open:'مفتوح', assigned:'معين', in_progress:'قيد التنفيذ', resolved:'محلول', closed:'مغلق', escalated:'مصعد', archived:'مؤرشف' };
+const STATUS_L = { open:'مفتوح', assigned:'معين', in_progress:'قيد التنفيذ', resolved:'مغلق', closed:'مغلق', escalated:'مصعد', archived:'مؤرشف' };
 const PRIO_L   = { critical:'حرجة', high:'عالية', medium:'متوسطة', low:'منخفضة' };
 const CAT_L    = { hardware:'أجهزة', software:'برامج', network:'شبكة', email:'بريد', access:'صلاحيات', printer:'طابعة', security:'أمن', other:'أخرى' };
-const STATUS_C = { open:'b-open', assigned:'b-assign', in_progress:'b-prog', resolved:'b-resolve', closed:'b-closed', escalated:'b-escal', archived:'b-inactive' };
+const STATUS_C = { open:'b-open', assigned:'b-assign', in_progress:'b-prog', resolved:'b-closed', closed:'b-closed', escalated:'b-escal', archived:'b-inactive' };
 const PRIO_C   = { critical:'b-crit', high:'b-high', medium:'b-med', low:'b-low' };
 const PRIO_SLA = { critical:4, high:8, medium:24, low:72 };
 
@@ -791,16 +791,17 @@ function renderDashboard() {
   const tickets = myTickets();
   const open    = tickets.filter(t=>t.status==='open').length;
   const prog    = tickets.filter(t=>['in_progress','assigned'].includes(t.status)).length;
-  const res     = tickets.filter(t=>t.status==='resolved').length;
-  const crit    = tickets.filter(t=>t.priority==='critical'&&!['resolved','closed'].includes(t.status)).length;
+  // مغلق = closed + resolved (legacy)
+  const closedCount = tickets.filter(t=>['closed','resolved'].includes(t.status)).length;
+  const crit    = tickets.filter(t=>t.priority==='critical'&&!['closed','resolved'].includes(t.status)).length;
 
   const colorForVal = (i) => ['#60A5FA','#FCD34D','#4ADE80','#F87171'][i];
 
   $('dashStats').innerHTML = [
-    ['مفتوح',       open, 'يحتاج إجراء'],
-    ['قيد التنفيذ', prog, 'جارٍ العمل'],
-    ['محلول',       res,  'مكتملة'],
-    ['حرجة',        crit, 'أولوية قصوى'],
+    ['مفتوح',       open,       'يحتاج إجراء'],
+    ['قيد التنفيذ', prog,       'جارٍ العمل'],
+    ['مغلق',        closedCount,'مكتملة'],
+    ['حرجة',        crit,       'أولوية قصوى'],
   ].map(([l,v,h],i)=>`
     <div class="stat-card" style="--_acc:${colorForVal(i)}">
       <div class="stat-label">${l}</div>
@@ -819,16 +820,20 @@ function renderDashboard() {
     }).then(r=>r.json()).then(data=>{
       const total = data.total || 0;
       const users = data.users || [];
-      const ROLE_AR = { employee:'موظف', admin:'IT Admin', manager:'مدير' };
 
       const usersHtml = users.length
         ? users.map(u=>`
             <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:0.5px solid var(--border);last-child:border-none;">
               <div style="width:8px;height:8px;border-radius:50%;background:#4ADE80;flex-shrink:0;"></div>
               <span style="font-size:13px;font-weight:500;color:var(--text-primary);flex:1;">${_e(u.name)}</span>
-              <span style="font-size:11px;color:var(--text-muted);">${_e(ROLE_AR[u.role]||u.role)}</span>
+              <span style="font-size:11px;color:var(--text-muted);">${_e(ROLES[u.role]||u.role)}</span>
             </div>`).join('')
         : `<div style="padding:12px;font-size:13px;color:var(--text-muted);text-align:center;">لا يوجد مستخدمون متصلون</div>`;
+
+      // Label ديناميكي: super_admin يشوف كل النظام، المدير يشوف إدارته
+      const scopeLabel = Perm.isSuper()
+        ? 'المستخدمون المتصلون — كل النظام'
+        : `المستخدمون المتصلون — إدارة ${Perm.myDept() || '—'}`;
 
       const el = document.createElement('div');
       el.className = 'chart-card c12';
@@ -837,7 +842,7 @@ function renderDashboard() {
         <div class="ch-head">
           <div>
             <div class="ch-title">🟢 الجلسات النشطة</div>
-            <div class="ch-sub">المستخدمون المتصلون حالياً</div>
+            <div class="ch-sub">${_e(scopeLabel)}</div>
           </div>
           <div style="font-family:var(--font-display);font-size:36px;font-weight:700;color:var(--gold);">${total}</div>
         </div>
@@ -1131,7 +1136,7 @@ function renderOutboundTickets() {
           <div class="stat-hint">لم تُحل بعد</div>
         </div>
         <div class="stat-card" style="--_acc:#4ADE80">
-          <div class="stat-label">محلولة</div>
+          <div class="stat-label">مغلقة</div>
           <div class="stat-val" style="color:#4ADE80">${done}</div>
           <div class="stat-hint">مكتملة</div>
         </div>
@@ -1519,7 +1524,9 @@ async function saveTicketUpdate() {
   const t = S.tickets.find(t=>t.id===S.selTicket);
   if (!t) return;
 
-  const newStatus     = $('upd_status').value;
+  let newStatus       = $('upd_status').value;
+  // تطبيع: لو أي حد حفظ "resolved" قديمة، نحولها لـ "closed"
+  if (newStatus === 'resolved') newStatus = 'closed';
   const note          = $('upd_note').value.trim();
   const assignedToVal = $('upd_assigned_to').value;
   // دلوقتي أي حد عنده صلاحية تعيين يقدر يعدل assigned_to (مش بس المدير القديم)
@@ -1971,7 +1978,7 @@ function renderUsersGrid() {
         <div class="uc-stats">
           <div class="ucs"><div class="ucs-v">${myT}</div><div class="ucs-l">طلباته</div></div>
           <div class="ucs"><div class="ucs-v">${asgn}</div><div class="ucs-l">معين</div></div>
-          <div class="ucs"><div class="ucs-v">${res}</div><div class="ucs-l">محلول</div></div>
+          <div class="ucs"><div class="ucs-v">${res}</div><div class="ucs-l">مغلق</div></div>
         </div>
         <div style="display:flex;gap:5px;flex-wrap:wrap;">
           <span class="badge ${u.is_active?'b-active':'b-inactive'}">${u.is_active?'نشط':'غير نشط'}</span>
@@ -2206,10 +2213,10 @@ function renderReports() {
   const lastMonth = tickets.filter(t=>new Date(t.created_at)>=lastMonthStart&&new Date(t.created_at)<=lastMonthEnd);
 
   const total    = tickets.length;
-  const resolved = tickets.filter(t=>['resolved','closed'].includes(t.status)).length;
+  const closedCnt = tickets.filter(t=>['resolved','closed'].includes(t.status)).length;
   const open     = tickets.filter(t=>['open','assigned'].includes(t.status)).length;
   const crit     = tickets.filter(t=>t.priority==='critical').length;
-  const resRate  = total?Math.round(resolved/total*100):0;
+  const resRate  = total?Math.round(closedCnt/total*100):0;
 
   // تغيير الشهر
   const thisMTotal = thisMonth.length;
@@ -2222,9 +2229,8 @@ function renderReports() {
   if (_resetBtn) _resetBtn.style.display = Perm.isSuper() ? '' : 'none';
 
   // ── Stats row ──────────────────────────────────────────
-  // stats cards — للكل
   const statsCards = [
-    ['معدل الحل',       total?resRate+'%':'—', 'من إجمالي التيكتات', '#4ADE80'],
+    ['معدل الإغلاق',     total?resRate+'%':'—', 'من إجمالي التيكتات', '#4ADE80'],
     ['إجمالي التيكتات', total,                 'منذ البداية',         '#60A5FA'],
     ['قيد الانتظار',    open,                  'تحتاج إجراء',         '#FCD34D'],
     ['حرجة',            crit,                  'أولوية قصوى',          '#F87171'],
@@ -2236,12 +2242,12 @@ function renderReports() {
   ).join('');
   const statsHtml = '<div class="stats-row" style="margin-bottom:16px;">' + statsCards + '</div>';
 
-  // مقارنة الأشهر — للقيادات (مدير/مشرف/super_admin)
+  // مقارنة الأشهر — للقيادات
   let monthHtml = '';
   if (isLead) {
     const mRows = [
       ['إجمالي التيكتات', thisMTotal, lastMTotal],
-      ['محلولة', thisMonth.filter(t=>['resolved','closed'].includes(t.status)).length, lastMonth.filter(t=>['resolved','closed'].includes(t.status)).length],
+      ['مغلقة', thisMonth.filter(t=>['resolved','closed'].includes(t.status)).length, lastMonth.filter(t=>['resolved','closed'].includes(t.status)).length],
       ['حرجة',   thisMonth.filter(t=>t.priority==='critical').length, lastMonth.filter(t=>t.priority==='critical').length],
       ['مفتوحة', thisMonth.filter(t=>t.status==='open').length, lastMonth.filter(t=>t.status==='open').length],
     ].map(([label,curr,prev]) => {
@@ -2273,7 +2279,7 @@ function renderReports() {
       <div class="tbl-wrap" style="margin-bottom:20px;">
         <div class="tbl-head"><span class="tbl-head-title">أدائي الشخصي</span></div>
         <table class="data-tbl">
-          <thead><tr><th>معين لي</th><th>محلولة</th><th>قيد التنفيذ</th><th>معدل الحل</th><th>الأداء</th></tr></thead>
+          <thead><tr><th>معين لي</th><th>مغلقة</th><th>قيد التنفيذ</th><th>معدل الإغلاق</th><th>الأداء</th></tr></thead>
           <tbody><tr>
             <td><strong>${myAssigned}</strong></td>
             <td style="color:#4ADE80;">${myDone}</td>
@@ -2291,7 +2297,7 @@ function renderReports() {
       <div class="tbl-wrap">
         <div class="tbl-head"><span class="tbl-head-title">توزيع تيكتاتي حسب نوع الطلب</span></div>
         <table class="data-tbl">
-          <thead><tr><th>نوع الطلب</th><th>إجمالي</th><th>مفتوح</th><th>محلول</th></tr></thead>
+          <thead><tr><th>نوع الطلب</th><th>إجمالي</th><th>مفتوح</th><th>مغلق</th></tr></thead>
           <tbody>${(() => {
             const mine = tickets.filter(t => t.assigned_to === S.user.id);
             const groups = {};
@@ -2335,7 +2341,7 @@ function renderReports() {
     <div class="tbl-wrap" style="margin-bottom:20px;">
       <div class="tbl-head"><span class="tbl-head-title">${Perm.isSuper()?'أداء فريق العمل':`أداء فريق ${Perm.myDept()||'الإدارة'}`}</span></div>
       <table class="data-tbl">
-        <thead><tr><th>الموظف</th><th>الدور</th><th>معين له</th><th>محلولة</th><th>معدل الحل</th><th>الأداء</th></tr></thead>
+        <thead><tr><th>الموظف</th><th>الدور</th><th>معين له</th><th>مغلقة</th><th>معدل الإغلاق</th><th>الأداء</th></tr></thead>
         <tbody>${perf.length?perf.map(p=>`<tr>
           <td><strong>${_e(p.name)}</strong></td>
           <td style="font-size:11px;color:var(--text-muted);">${_e(ROLES[p.role]||p.role)}</td>
@@ -2353,7 +2359,7 @@ function renderReports() {
     <div class="tbl-wrap">
       <div class="tbl-head"><span class="tbl-head-title">التوزيع حسب الإدارة</span></div>
       <table class="data-tbl">
-        <thead><tr><th>الإدارة</th><th>إجمالي</th><th>مفتوح</th><th>قيد التنفيذ</th><th>محلول</th></tr></thead>
+        <thead><tr><th>الإدارة</th><th>إجمالي</th><th>مفتوح</th><th>قيد التنفيذ</th><th>مغلق</th></tr></thead>
         <tbody>${(() => {
           const groups = {};
           tickets.forEach(t => {
@@ -2374,7 +2380,7 @@ function renderReports() {
     </div>`;
 }
 async function confirmResetStats() {
-  showConfirm('🔄', 'إعادة ضبط الإحصاءات', 'سيؤدي هذا إلى أرشفة جميع التيكتات المغلقة والمحلولة.\nهل أنت متأكد؟', async ()=>{
+  showConfirm('🔄', 'إعادة ضبط الإحصاءات', 'سيؤدي هذا إلى أرشفة جميع التيكتات المغلقة.\nهل أنت متأكد؟', async ()=>{
     try {
       await sbFetch('/tickets?status=in.(resolved,closed)',{
         method:'PATCH',
@@ -2528,7 +2534,7 @@ function renderProfile() {
         <div class="stats-row">
           <div class="stat-card"><div class="stat-label">إجمالي طلباتي</div><div class="stat-val">${myT.length}</div></div>
           <div class="stat-card" style="--_acc:#60A5FA"><div class="stat-label">مفتوحة</div><div class="stat-val" style="color:#60A5FA">${myT.filter(t=>t.status==='open').length}</div></div>
-          <div class="stat-card" style="--_acc:#4ADE80"><div class="stat-label">محلولة</div><div class="stat-val" style="color:#4ADE80">${myT.filter(t=>['resolved','closed'].includes(t.status)).length}</div></div>
+          <div class="stat-card" style="--_acc:#4ADE80"><div class="stat-label">مغلقة</div><div class="stat-val" style="color:#4ADE80">${myT.filter(t=>['resolved','closed'].includes(t.status)).length}</div></div>
         </div>
         <div class="dc" style="margin-top:0;">
           <div class="dc-title">إعدادات العرض</div>
