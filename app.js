@@ -99,7 +99,11 @@ const Perm = {
   myDept: () => (S.user?.department || '').trim(),
 
   // هل ده مستخدم تابع لنفس إدارة الطلب المستهدفة؟
-  sameDeptAs: (t) => Perm.myDept() && Perm.myDept() === (t.target_department || '').trim(),
+  sameDeptAs: (t) => {
+  const d1 = (Perm.myDept() || '').trim().toLowerCase();
+  const d2 = (t.target_department || '').trim().toLowerCase();
+  return d1 && d2 && d1 === d2;
+},
 
   // ── رؤية الطلبات ──
   // هل المستخدم يقدر يشوف تفاصيل التيكت ده؟
