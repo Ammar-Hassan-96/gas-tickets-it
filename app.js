@@ -99,42 +99,29 @@ const Perm = {
   myDept: () => (S.user?.department || '').trim(),
 
   // هل ده مستخدم تابع لنفس إدارة الطلب المستهدفة؟
-  sameDeptAs: (t) => {
-  const d1 = (Perm.myDept() || '').trim().toLowerCase();
-  const d2 = (t.target_department || '').trim().toLowerCase();
-  return d1 && d2 && d1 === d2;
-},
+  sameDeptAs: (t) => Perm.myDept() && Perm.myDept() === (t.target_department || '').trim(),
 
   // ── رؤية الطلبات ──
   // هل المستخدم يقدر يشوف تفاصيل التيكت ده؟
-canSeeTicket: (t) => {
-  if (!t) return false;
+  canSeeTicket: (t) => {
+    if (!t) return false;
+    // super_admin يشوف كل حاجة
+    if (Perm.isSuper()) return true;
+    // صاحب الطلب دايماً يشوفه (شفافية كاملة لمقدم الطلب)
+    if (t.created_by === S.user.id) return true;
+    // المعين عليه يشوفه
+    if (t.assigned_to === S.user.id) return true;
+    // Legacy: التيكتات القديمة بدون target_department يشوفها كل الـ admins/managers/supervisors
+    if (!t.target_department) {
+      return Perm.isManager() || Perm.isSupervisor();
+    }
+    // مدير/مشرف الإدارة المستهدفة يشوف كل طلباتها
+    if (Perm.sameDeptAs(t) && Perm.isDeptLead()) return true;
+    // موظف في نفس الإدارة يشوف الطلبات المفتوحة (open) عشان يقدر يستلمها
+    if (Perm.sameDeptAs(t) && Perm.isEmployee() && t.status === 'open') return true;
+    return false;
+  },
 
-  // 🔧 حل مشكلة اختلاف النوع (string / number)
-  const userId = String(S.user?.id || '');
-
-  // ✅ super_admin يشوف كل حاجة
-  if (Perm.isSuper()) return true;
-
-  // ✅ صاحب الطلب يشوفه
-  if (String(t.created_by || '') === userId) return true;
-
-  // ✅ المعين عليه يشوفه
-  if (String(t.assigned_to || '') === userId) return true;
-
-  // ✅ التيكتات القديمة بدون إدارة
-  if (!t.target_department) {
-    return Perm.isManager() || Perm.isSupervisor();
-  }
-
-  // ✅ مدير / مشرف الإدارة يشوف كل تيكتات إدارته
-  if (Perm.isDeptLead() && Perm.sameDeptAs(t)) return true;
-
-  // ✅ موظف في نفس الإدارة يشوف المفتوح فقط
-  if (Perm.sameDeptAs(t) && Perm.isEmployee() && t.status === 'open') return true;
-
-  return false;
-},
   // هل يقدر يعدّل حالة التيكت / يرد عليه؟
   canActOnTicket: (t) => {
     if (!t) return false;
@@ -180,7 +167,6 @@ canSeeTicket: (t) => {
   // ── الصفحات المسموح بها ──
   canSeePage: (page) => {
     switch (page) {
-      case 'detail': return true;
       case 'dashboard':  return true;
       case 'mytickets':  return true;
       case 'profile':    return true;
