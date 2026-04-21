@@ -165,22 +165,22 @@ const Perm = {
   },
 
   // ── الصفحات المسموح بها ──
-  canSeePage: (page) => {
-    switch (page) {
-      case 'dashboard':  return true;
-      case 'mytickets':  return true;
-      case 'profile':    return true;
-      case 'alltickets': return Perm.isDeptLead() || Perm.isSuper();
-      case 'reports':    return Perm.isDeptLead() || Perm.isSuper();
-      case 'users':      return Perm.isManager() || Perm.isSuper();
-      case 'roles':      return Perm.isSuper();  // صفحة تعيين الأدوار — super_admin فقط
-      case 'deptmap':    return Perm.isSuper();
-      case 'archive':    return Perm.isSuper();
-      case 'auditlog':   return Perm.isSuper();
-      default: return false;
-    }
-  },
-};
+canSeePage: (page) => {
+  switch (page) {
+    case 'dashboard':  return true;
+    case 'mytickets':  return true;
+    case 'profile':    return true;
+    case 'detail':     return true; // ✅ الحل هنا
+    case 'alltickets': return Perm.isDeptLead() || Perm.isSuper();
+    case 'reports':    return Perm.isDeptLead() || Perm.isSuper();
+    case 'users':      return Perm.isManager() || Perm.isSuper();
+    case 'roles':      return Perm.isSuper();
+    case 'deptmap':    return Perm.isSuper();
+    case 'archive':    return Perm.isSuper();
+    case 'auditlog':   return Perm.isSuper();
+    default: return false;
+  }
+},
 
 // فلترة التيكتات المرئية للمستخدم الحالي
 function visibleTickets() {
