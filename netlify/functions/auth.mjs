@@ -35,10 +35,20 @@ async function validateToken(token) {
   );
   if (!sessions?.length) throw new Error("Invalid or expired session");
   const users = await sb(
-    `/users?id=eq.${sessions[0].user_id}&is_active=eq.true&select=id,name,username,role`
+    `/users?id=eq.${sessions[0].user_id}&is_active=eq.true&select=id,name,username,role,department`
   );
   if (!users?.length) throw new Error("User not found");
   return users[0];
+}
+
+// ── Role helpers (نسخة خادم) ──
+const isSuper   = (u) => u?.role === 'super_admin';
+const isManager = (u) => u?.role === 'manager';
+// هل المستخدم ده super_admin أو manager في نفس إدارة الـ target؟
+function canManageInDept(requester, targetDept) {
+  if (isSuper(requester)) return true;
+  if (isManager(requester) && (requester.department || '').trim() === (targetDept || '').trim()) return true;
+  return false;
 }
 
 // Write to audit log
@@ -108,17 +118,23 @@ export default async (req) => {
     let requester;
     try { requester = await validateToken(token); }
     catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
-    if (requester.role !== "manager") return Response.json({ error: "هذه العملية للمديرين فقط" }, { status: 403 });
     if (requester.id === user_id) return Response.json({ error: "لا يمكنك حذف حسابك الخاص" }, { status: 400 });
-    // Get target user info for audit
+    // Get target user info
     let target;
-    try { target = await sb(`/users?id=eq.${user_id}&select=id,name,username`); }
+    try { target = await sb(`/users?id=eq.${user_id}&select=id,name,username,role,department`); }
     catch { return Response.json({ error: "المستخدم غير موجود" }, { status: 404 }); }
     if (!target?.length) return Response.json({ error: "المستخدم غير موجود" }, { status: 404 });
-    if (target[0].username === "ammar.admin") return Response.json({ error: "هذا الحساب محمي" }, { status: 403 });
+    const t = target[0];
+    if (t.username === "ammar.admin") return Response.json({ error: "هذا الحساب محمي" }, { status: 403 });
+    // Permission: super_admin OR manager of the same department (and target is not manager/super_admin)
+    const allowed = isSuper(requester) ||
+      (isManager(requester) &&
+       (requester.department||'').trim() === (t.department||'').trim() &&
+       t.role !== 'manager' && t.role !== 'super_admin');
+    if (!allowed) return Response.json({ error: "ليس لديك صلاحية حذف هذا المستخدم" }, { status: 403 });
     try {
       await sb(`/users?id=eq.${user_id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      await audit(requester.id, requester.name, requester.role, "delete_user", "user", user_id, target[0].name);
+      await audit(requester.id, requester.name, requester.role, "delete_user", "user", user_id, t.name);
       return Response.json({ ok: true });
     } catch (e) { return Response.json({ error: "فشل الحذف: " + e.message }, { status: 500 }); }
   }
@@ -129,15 +145,20 @@ export default async (req) => {
     let requester;
     try { requester = await validateToken(token); }
     catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
-    if (requester.role !== "manager") return Response.json({ error: "هذه العملية للمديرين فقط" }, { status: 403 });
     let ticket;
-    try { ticket = await sb(`/tickets?id=eq.${ticket_id}&select=id,title,ticket_number`); }
+    try { ticket = await sb(`/tickets?id=eq.${ticket_id}&select=id,title,ticket_number,target_department`); }
     catch { return Response.json({ error: "التيكت غير موجود" }, { status: 404 }); }
     if (!ticket?.length) return Response.json({ error: "التيكت غير موجود" }, { status: 404 });
+    const tk = ticket[0];
+    // Permission: super_admin OR manager of target department (or legacy tickets: super only)
+    const allowed = isSuper(requester) ||
+      (tk.target_department && isManager(requester) &&
+       (requester.department||'').trim() === (tk.target_department||'').trim());
+    if (!allowed) return Response.json({ error: "ليس لديك صلاحية حذف هذا الطلب" }, { status: 403 });
     try {
       await sb(`/ticket_comments?ticket_id=eq.${ticket_id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
       await sb(`/tickets?id=eq.${ticket_id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      await audit(requester.id, requester.name, requester.role, "delete_ticket", "ticket", ticket_id, `${ticket[0].ticket_number} - ${ticket[0].title}`);
+      await audit(requester.id, requester.name, requester.role, "delete_ticket", "ticket", ticket_id, `${tk.ticket_number} - ${tk.title}`);
       return Response.json({ ok: true });
     } catch (e) { return Response.json({ error: "فشل الحذف: " + e.message }, { status: 500 }); }
   }
@@ -161,14 +182,14 @@ export default async (req) => {
   }
 
 
-  // ── RESET AUDIT LOG ──────────────────────────────────
+  // ── RESET AUDIT LOG (super_admin only) ──────────────
   if (action === "reset_audit_log") {
     const { token } = body;
     let requester;
     try { requester = await validateToken(token); }
     catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
-    if (requester.role !== "manager") {
-      return Response.json({ error: "هذه العملية للمديرين فقط" }, { status: 403 });
+    if (!isSuper(requester)) {
+      return Response.json({ error: "هذه العملية لمدير النظام فقط" }, { status: 403 });
     }
     try {
       // Log the reset action BEFORE deleting (so it survives reset)
@@ -242,14 +263,14 @@ export default async (req) => {
     return Response.json({ ok: true });
   }
 
-  // ── GET ACTIVE SESSIONS ───────────────────────────────
+  // ── GET ACTIVE SESSIONS (super_admin + managers) ─────
   if (action === "get_sessions") {
     const { token } = body;
     let requester;
     try { requester = await validateToken(token); }
     catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
-    if (requester.role !== "manager") {
-      return Response.json({ error: "هذه العملية للمديرين فقط" }, { status: 403 });
+    if (!isSuper(requester) && !isManager(requester)) {
+      return Response.json({ error: "ليس لديك صلاحية" }, { status: 403 });
     }
     try {
       const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
@@ -281,7 +302,7 @@ export default async (req) => {
     }
   }
 
-  // ── RESET USER PASSWORD (Manager resets any user's password) ──
+  // ── RESET USER PASSWORD (super_admin + manager of same dept) ──
   if (action === "reset_user_password") {
     const { token, user_id, new_password } = body;
     if (!token || !user_id || !new_password) {
@@ -290,18 +311,21 @@ export default async (req) => {
     if (new_password.length < 6) {
       return Response.json({ error: "كلمة المرور لازم تكون 6 أحرف على الأقل" }, { status: 400 });
     }
-    // Validate requester is manager
     let requester;
     try { requester = await validateToken(token); }
     catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
-    if (requester.role !== "manager") {
-      return Response.json({ error: "هذه العملية للمديرين فقط" }, { status: 403 });
-    }
     // Get target user info
     let target;
-    try { target = await sb(`/users?id=eq.${user_id}&select=id,name,username`); }
+    try { target = await sb(`/users?id=eq.${user_id}&select=id,name,username,role,department`); }
     catch { return Response.json({ error: "المستخدم غير موجود" }, { status: 404 }); }
     if (!target?.length) return Response.json({ error: "المستخدم غير موجود" }, { status: 404 });
+    const tgt = target[0];
+    // Permission check
+    const allowed = isSuper(requester) ||
+      (isManager(requester) && (requester.department||'').trim() === (tgt.department||'').trim() && tgt.role !== 'manager' && tgt.role !== 'super_admin');
+    if (!allowed) {
+      return Response.json({ error: "ليس لديك صلاحية تعيين كلمة مرور لهذا المستخدم" }, { status: 403 });
+    }
     // Hash new password and update
     const newHash = sha256(new_password);
     try {
