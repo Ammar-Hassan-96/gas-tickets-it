@@ -107,24 +107,31 @@ const Perm = {
 
   // ── رؤية الطلبات ──
   // هل المستخدم يقدر يشوف تفاصيل التيكت ده؟
-  canSeeTicket: (t) => {
-    if (!t) return false;
-    // super_admin يشوف كل حاجة
-    if (Perm.isSuper()) return true;
-    // صاحب الطلب دايماً يشوفه (شفافية كاملة لمقدم الطلب)
-    if (t.created_by === S.user.id) return true;
-    // المعين عليه يشوفه
-    if (t.assigned_to === S.user.id) return true;
-    // Legacy: التيكتات القديمة بدون target_department يشوفها كل الـ admins/managers/supervisors
-    if (!t.target_department) {
-      return Perm.isManager() || Perm.isSupervisor();
-    }
-    // مدير/مشرف الإدارة المستهدفة يشوف كل طلباتها
-    if (Perm.sameDeptAs(t) && Perm.isDeptLead()) return true;
-    // موظف في نفس الإدارة يشوف الطلبات المفتوحة (open) عشان يقدر يستلمها
-    if (Perm.sameDeptAs(t) && Perm.isEmployee() && t.status === 'open') return true;
-    return false;
-  },
+canSeeTicket: (t) => {
+  if (!t) return false;
+
+  // ✅ super_admin يشوف كل حاجة
+  if (Perm.isSuper()) return true;
+
+  // ✅ صاحب الطلب يشوفه
+  if (t.created_by === S.user.id) return true;
+
+  // ✅ المعين عليه يشوفه
+  if (t.assigned_to === S.user.id) return true;
+
+  // ✅ التيكتات القديمة بدون إدارة
+  if (!t.target_department) {
+    return Perm.isManager() || Perm.isSupervisor();
+  }
+
+  // ✅ مدير / مشرف الإدارة يشوف كل تيكتات إدارته
+  if (Perm.isDeptLead() && Perm.sameDeptAs(t)) return true;
+
+  // ✅ موظف في نفس الإدارة يشوف المفتوح فقط
+  if (Perm.sameDeptAs(t) && Perm.isEmployee() && t.status === 'open') return true;
+
+  return false;
+},
 
   // هل يقدر يعدّل حالة التيكت / يرد عليه؟
   canActOnTicket: (t) => {
