@@ -140,10 +140,11 @@ const Perm = {
     if (!t.target_department) {
       return Perm.isManager() || Perm.isSupervisor();
     }
-    // 📥 Inbound: قيادة الإدارة المستهدفة
+    // 📥 Inbound: قيادة الإدارة المستهدفة (مدير + مشرف)
     if (Perm.sameDeptAs(t) && Perm.isDeptLead()) return true;
-    // 📤 Outbound: قيادة الإدارة يشوفوا طلبات فريقهم الصادرة (متابعة)
-    if (Perm.isDeptLead() && Perm.ownerFromMyDept(t)) return true;
+    // 📤 Outbound: المدير فقط يشوف طلبات فريقه الصادرة (شفافية إدارية)
+    // المشرف ما يشوفهاش — مسؤولية المدير وحده لحفظ خصوصية الموظفين
+    if (Perm.isManager() && Perm.ownerFromMyDept(t)) return true;
     // موظف في نفس الإدارة المستهدفة يشوف الطلبات المفتوحة عشان يستلمها
     if (Perm.sameDeptAs(t) && Perm.isEmployee() && t.status === 'open') return true;
     return false;
@@ -161,15 +162,15 @@ const Perm = {
     return false;
   },
 
-  // هل يقدر يضيف تعليق؟ (أوسع من canActOnTicket)
-  // يشمل القيادات للطلبات Outbound كمان
+  // هل يقدر يضيف تعليق؟
+  // المدير (فقط) يقدر يعلق على طلبات فريقه الصادرة — المشرف لا
   canCommentOnTicket: (t) => {
     if (!t) return false;
     if (Perm.canActOnTicket(t)) return true;
     // صاحب الطلب يقدر يعلق دايماً
     if (t.created_by === S.user.id) return true;
-    // 📤 قيادة الإدارة ترد بتعليقات على طلبات فريقها الصادرة
-    if (Perm.isDeptLead() && Perm.ownerFromMyDept(t)) return true;
+    // 📤 المدير فقط يرد بتعليقات على طلبات فريقه الصادرة
+    if (Perm.isManager() && Perm.ownerFromMyDept(t)) return true;
     return false;
   },
 
@@ -244,9 +245,11 @@ const Perm = {
         return true;
       // صفحات القيادات
       case 'alltickets':
-      case 'outbound':
       case 'reports':
         return Perm.isDeptLead() || Perm.isSuper();
+      // Outbound: مدير الإدارة + super_admin فقط (المشرف ما يشوفهاش — مسؤولية إدارية)
+      case 'outbound':
+        return Perm.isManager() || Perm.isSuper();
       // صفحة المستخدمين: manager الإدارة + super_admin
       case 'users':
         return Perm.isManager() || Perm.isSuper();
@@ -1351,7 +1354,7 @@ async function openTicketDetail(id) {
   $('detailNum').textContent   = t.ticket_number;
   $('detailTitle').textContent = t.title;
 
-  const isOutbound = Perm.isDeptLead() && Perm.isOutbound(t);
+  const isOutbound = Perm.isManager() && Perm.isOutbound(t);
   const canUpdate = Perm.canActOnTicket(t);
   const canDelete = Perm.canDeleteTicket(t);
   const canAssign = Perm.canAssignTicket(t) && t.assigned_to !== S.user.id && !['resolved','closed'].includes(t.status);
