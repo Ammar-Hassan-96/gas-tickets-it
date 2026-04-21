@@ -283,19 +283,31 @@ export default async (req) => {
         if (seen.has(s.user_id)) return false;
         seen.add(s.user_id); return true;
       });
-      // Fetch user names for the active sessions
+      // Fetch user info for active sessions (including department for filtering)
       const userIds = unique.map(s => s.user_id);
       let users = [];
       if (userIds.length > 0) {
-        users = await sb(`/users?id=in.(${userIds.join(',')})&select=id,name,role,username`) || [];
+        users = await sb(`/users?id=in.(${userIds.join(',')})&select=id,name,role,username,department`) || [];
       }
-      // Map sessions to user info — exclude ammar.admin (master account)
+      // العزل حسب الإدارة: super_admin يشوف الكل، المدير يشوف إدارته فقط
+      const isSuperReq = isSuper(requester);
+      const myDept     = (requester.department || '').trim();
+
       const activeUsers = unique
         .map(s => {
           const u = users.find(u => u.id === s.user_id);
-          return { name: u?.name || '—', role: u?.role || '—', username: u?.username || '', since: s.created_at };
+          return {
+            name: u?.name || '—',
+            role: u?.role || '—',
+            username: u?.username || '',
+            department: (u?.department || '').trim(),
+            since: s.created_at
+          };
         })
-        .filter(u => u.username !== 'ammar.admin');
+        .filter(u => u.username !== 'ammar.admin')
+        // لو مدير: يشوف بس موظفي إدارته (بما فيهم نفسه)
+        .filter(u => isSuperReq ? true : u.department === myDept);
+
       return Response.json({ total: activeUsers.length, users: activeUsers });
     } catch (e) {
       return Response.json({ error: e.message }, { status: 500 });
