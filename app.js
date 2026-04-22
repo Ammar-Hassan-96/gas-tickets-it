@@ -1879,7 +1879,6 @@ async function submitTicket() {
     const newTicket = saved?.[0]
       ? { ...saved[0], comments: [] }
       : { ...ticket, id:'local'+Date.now(),
-          ticket_number:'GAS-'+new Date().getFullYear()+'-????',
           created_at:new Date().toISOString(), comments:[] };
     S.tickets.unshift(newTicket);
 
