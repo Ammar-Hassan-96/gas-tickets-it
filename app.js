@@ -930,6 +930,8 @@ function renderDashCharts(tickets) {
 
   // Recent tickets table — نسخة كاملة بكل الأعمدة
   const recent = [...myTickets()].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).slice(0,5);
+  // للموظف العادي: كل التيكتات منه، فمش محتاج عمود "مقدم الطلب"
+  const showCreator = !Perm.isEmployee();
   const recentHtml = `
     <div class="chart-card c12">
       <div class="ch-head">
@@ -941,6 +943,7 @@ function renderDashCharts(tickets) {
           <thead><tr>
             <th>الرقم</th>
             <th>العنوان</th>
+            ${showCreator ? '<th>مقدم الطلب</th><th>قسم المقدم</th>' : ''}
             <th>الإدارة المستهدفة</th>
             <th>نوع الطلب</th>
             <th>الأولوية</th>
@@ -960,10 +963,15 @@ function renderDashCharts(tickets) {
               : '<span style="color:var(--text-muted);font-size:11px;">غير معين</span>';
             const attachTag = (t.attachments && t.attachments.length)
               ? `<span style="font-size:10px;color:var(--gold);margin-inline-start:6px;">📎 ${t.attachments.length}</span>` : '';
+            const creatorCells = showCreator
+              ? `<td><strong style="font-size:12px;">${_e(uname(t.created_by))}</strong></td>
+                 <td style="font-size:11px;color:var(--text-muted);">${_e(udept(t.created_by)||'—')}</td>`
+              : '';
             return `
             <tr onclick="openTicketDetail('${t.id}')">
               <td><span class="tnum">${_e(t.ticket_number)}</span></td>
-              <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}${attachTag}</td>
+              <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}${attachTag}</td>
+              ${creatorCells}
               <td>${deptCell}</td>
               <td>${reqTypeCell}</td>
               <td>${pbadge(t.priority)}</td>
@@ -971,7 +979,7 @@ function renderDashCharts(tickets) {
               <td>${assignedCell}</td>
               <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
             </tr>`;
-          }).join('') : '<tr><td colspan="8"><div class="empty-state"><p>لا توجد تيكتات بعد</p></div></td></tr>'}
+          }).join('') : `<tr><td colspan="${showCreator?10:8}"><div class="empty-state"><p>لا توجد تيكتات بعد</p></div></td></tr>`}
           </tbody>
         </table>
       </div>
