@@ -589,7 +589,7 @@ function checkSLAAlerts() {
   const now = Date.now();
   S.tickets.forEach(t => {
     if (['resolved','closed'].includes(t.status)) return;
-    const slaH    = PRIO_SLA[t.priority] || 24;
+    const slaH    = PRIO_SLA[t.priority] || 9;
     const elapsed = (now - new Date(t.created_at)) / 3600000;
     const pct     = elapsed / slaH * 100;
     // تنبيه لما يوصل 80% من الـ SLA ومتبعتش تنبيه لنفس التيكت قبل كده
