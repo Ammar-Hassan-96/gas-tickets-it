@@ -1,4 +1,3 @@
-import { safeFetch, Log, State, debug } from './core.safe.js';
 /* ═══════════════════════════════════════════════════════
    GAS IT DESK — Application Logic
    German Auto Service · Mercedes-Benz Egypt
@@ -611,13 +610,13 @@ function checkSLAAlerts() {
 
 async function loadTickets() {
   try {
-    S.tickets = await safeFetch(() => sbFetch('/tickets?select=*,comments:ticket_comments(*), 'API Call')&order=created_at.desc') || [];
+    S.tickets = await sbFetch('/tickets?select=*,comments:ticket_comments(*)&order=created_at.desc') || [];
   } catch { S.tickets = []; }
 }
 
 async function loadUsers() {
   try {
-    const all = await safeFetch(() => sbFetch('/users?select=id,name,username,email,role,department,phone,is_active&order=name'), 'API Call') || [];
+    const all = await sbFetch('/users?select=id,name,username,email,role,department,phone,is_active&order=name') || [];
     // Hide developer/system accounts from all views
     S.users = all.filter(u => u.username !== 'ammar.admin');
   } catch { S.users = []; }
@@ -627,7 +626,7 @@ async function loadNotifications() {
   if (!S.user) return;
   try {
     // Always filter by user_id — every role sees only their own notifications
-    S.notifs = await safeFetch(() => sbFetch(`/notifications?user_id=eq.${S.user.id}&order=created_at.desc&limit=30`), 'API Call') || [];
+    S.notifs = await sbFetch(`/notifications?user_id=eq.${S.user.id}&order=created_at.desc&limit=30`) || [];
   } catch { S.notifs = []; }
   renderNotifPanel();
 }
@@ -635,7 +634,7 @@ async function loadNotifications() {
 // ── DEPARTMENT MAP: load from DB, fall back to defaults ─────
 async function loadDepartmentMap() {
   try {
-    const rows = await safeFetch(() => sbFetch('/department_requests?is_active=eq.true&order=department,sort_order'), 'API Call');
+    const rows = await sbFetch('/department_requests?is_active=eq.true&order=department,sort_order');
     if (!rows || !rows.length) {
       console.warn('[DEPT] department_requests جدول فاضي — استخدام الخريطة الافتراضية');
       DEPT_MAP = { ...DEFAULT_DEPT_MAP };
@@ -1462,9 +1461,9 @@ async function assignToMe(ticketId) {
   const t = S.tickets.find(t=>t.id===ticketId);
   if (!t) return;
   try {
-    await safeFetch(() => sbFetch(`/tickets?id=eq.${t.id}`, {
+    await sbFetch(`/tickets?id=eq.${t.id}`, {
       method:'PATCH',
-      body: JSON.stringify({ assigned_to: S.user.id, status: t.status==='open' ? 'assigned' : t.status, updated_at: new Date(), 'API Call').toISOString() })
+      body: JSON.stringify({ assigned_to: S.user.id, status: t.status==='open' ? 'assigned' : t.status, updated_at: new Date().toISOString() })
     });
     t.assigned_to = S.user.id;
     if (t.status==='open') t.status = 'assigned';
@@ -1551,9 +1550,9 @@ async function saveTicketUpdate() {
   const prevAssigned = t.assigned_to;
 
   try {
-    await safeFetch(() => sbFetch(`/tickets?id=eq.${t.id}`, {
+    await sbFetch(`/tickets?id=eq.${t.id}`, {
       method:'PATCH',
-      body: JSON.stringify({ status:newStatus, assigned_to:newAssigned, updated_at:new Date(), 'API Call').toISOString() })
+      body: JSON.stringify({ status:newStatus, assigned_to:newAssigned, updated_at:new Date().toISOString() })
     });
 
     if (note) {
@@ -1563,7 +1562,7 @@ async function saveTicketUpdate() {
         content:     note,
         author_name: S.user.name,
       };
-      const saved = await safeFetch(() => sbFetch('/ticket_comments', { method:'POST', body:JSON.stringify(comment), 'API Call') });
+      const saved = await sbFetch('/ticket_comments', { method:'POST', body:JSON.stringify(comment) });
       if (!t.comments) t.comments = [];
       if (saved?.[0]) t.comments.push(saved[0]);
     }
@@ -1620,7 +1619,7 @@ async function addComment(ticketId) {
 
   try {
     const comment = { ticket_id:ticketId, user_id:S.user.id, content:text, author_name:S.user.name };
-    const saved = await safeFetch(() => sbFetch('/ticket_comments', { method:'POST', body:JSON.stringify(comment), 'API Call') });
+    const saved = await sbFetch('/ticket_comments', { method:'POST', body:JSON.stringify(comment) });
     if (!t.comments) t.comments=[];
     if (saved?.[0]) t.comments.push(saved[0]);
     else t.comments.push({...comment, id:'local'+Date.now(), created_at:new Date().toISOString()});
@@ -1646,9 +1645,9 @@ async function archiveTicket(id) {
   if (!t) return;
   showConfirm('📦', 'أرشفة التيكت', `هل تريد أرشفة "${t.title}"؟\nيمكن استرجاعه لاحقاً من صفحة الأرشيف.`, async ()=>{
     try {
-      await safeFetch(() => sbFetch(`/tickets?id=eq.${id}`, {
+      await sbFetch(`/tickets?id=eq.${id}`, {
         method:'PATCH',
-        body: JSON.stringify({ status:'archived', updated_at:new Date(), 'API Call').toISOString() }),
+        body: JSON.stringify({ status:'archived', updated_at:new Date().toISOString() }),
         headers:{'Prefer':'return=minimal'}
       });
       t.status = 'archived';
@@ -1665,9 +1664,9 @@ async function restoreTicket(id) {
   const t = S.tickets.find(t=>t.id===id);
   if (!t) return;
   try {
-    await safeFetch(() => sbFetch(`/tickets?id=eq.${id}`, {
+    await sbFetch(`/tickets?id=eq.${id}`, {
       method:'PATCH',
-      body: JSON.stringify({ status:'closed', updated_at:new Date(), 'API Call').toISOString() }),
+      body: JSON.stringify({ status:'closed', updated_at:new Date().toISOString() }),
       headers:{'Prefer':'return=minimal'}
     });
     t.status = 'closed';
@@ -1876,7 +1875,7 @@ async function submitTicket() {
       // Keep category for backward-compat
       category: 'other',
     };
-    const saved = await safeFetch(() => fetch('/.netlify/functions/tickets', { method:'POST', body: JSON.stringify(ticket), 'API Call') });
+    const saved = await sbFetch('/tickets', { method:'POST', body: JSON.stringify(ticket) });
     const newTicket = saved?.[0]
       ? { ...saved[0], comments: [] }
       : { ...ticket, id:'local'+Date.now(),
@@ -2102,7 +2101,7 @@ async function saveUser() {
       payload.password_hash = Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
     }
     try {
-      await safeFetch(() => sbFetch(`/users?id=eq.${S.editUserId}`,{method:'PATCH',body:JSON.stringify(payload), 'API Call')});
+      await sbFetch(`/users?id=eq.${S.editUserId}`,{method:'PATCH',body:JSON.stringify(payload)});
       const idx = S.users.findIndex(u=>u.id===S.editUserId);
       if (idx>-1) S.users[idx] = {...S.users[idx],...payload};
       closeModal('newUserModal');
@@ -2118,7 +2117,7 @@ async function saveUser() {
     const hashHex = Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
     const payload = { name, username:uname, email:email||null, password_hash:hashHex, role, department:dept, phone:phone||null, is_active:true };
     try {
-      const saved = await safeFetch(() => sbFetch('/users',{method:'POST',body:JSON.stringify(payload), 'API Call')});
+      const saved = await sbFetch('/users',{method:'POST',body:JSON.stringify(payload)});
       if (saved?.[0]) {
         // Replace if somehow already in state, otherwise push
         const existIdx = S.users.findIndex(u=>u.id===saved[0].id);
@@ -2393,7 +2392,7 @@ function renderReports() {
 async function confirmResetStats() {
   showConfirm('🔄', 'إعادة ضبط الإحصاءات', 'سيؤدي هذا إلى أرشفة جميع التيكتات المغلقة.\nهل أنت متأكد؟', async ()=>{
     try {
-      await safeFetch(() => sbFetch('/tickets?status=in.(resolved,closed), 'API Call')',{
+      await sbFetch('/tickets?status=in.(resolved,closed)',{
         method:'PATCH',
         body:JSON.stringify({ status:'closed', updated_at:new Date().toISOString() }),
         headers:{'Prefer':'return=minimal'}
@@ -2445,7 +2444,7 @@ async function renderAuditLog() {
   // Fetch logs
   let logs = [];
   try {
-    logs = await safeFetch(() => sbFetch('/audit_logs?select=*&order=created_at.desc&limit=100'), 'API Call') || [];
+    logs = await sbFetch('/audit_logs?select=*&order=created_at.desc&limit=100') || [];
   } catch(e) { }
 
   // Render table
@@ -2691,10 +2690,10 @@ async function deleteNotif(id) {
   S.notifs = S.notifs.filter(n=>n.id!==id);
   renderNotifPanel();
   // مسح من DB
-  await safeFetch(() => sbFetch(`/notifications?id=eq.${id}`, {
+  await sbFetch(`/notifications?id=eq.${id}`, {
     method:'DELETE',
     headers:{'Prefer':'return=minimal'}
-  }), 'API Call').catch(()=>{});
+  }).catch(()=>{});
 }
 
 
@@ -2712,10 +2711,10 @@ async function deleteAllNotifs() {
   if (!S.user || !S.notifs.length) return;
   S.notifs = [];
   renderNotifPanel();
-  await safeFetch(() => sbFetch(`/notifications?user_id=eq.${S.user.id}`, {
+  await sbFetch(`/notifications?user_id=eq.${S.user.id}`, {
     method:'DELETE',
     headers:{'Prefer':'return=minimal'}
-  }), 'API Call').catch(()=>{});
+  }).catch(()=>{});
 }
 
 // Close notif panel on outside click
@@ -2930,9 +2929,9 @@ async function saveUserRole(userId) {
     return;
   }
   try {
-    await safeFetch(() => sbFetch(`/users?id=eq.${userId}`, {
+    await sbFetch(`/users?id=eq.${userId}`, {
       method:'PATCH',
-      body: JSON.stringify({ role, department: dept, is_active: active, role_updated_at: new Date(), 'API Call').toISOString() })
+      body: JSON.stringify({ role, department: dept, is_active: active, role_updated_at: new Date().toISOString() })
     });
     // تحديث الـ state المحلي
     u.role = role; u.department = dept; u.is_active = active;
@@ -2953,9 +2952,9 @@ async function saveAllRoles() {
         // تخطي اللي مفيش فيه تغيير
         if (u.role === role && (u.department||'') === dept && (u.is_active!==false) === active) continue;
         try {
-          await safeFetch(() => sbFetch(`/users?id=eq.${u.id}`, {
+          await sbFetch(`/users?id=eq.${u.id}`, {
             method:'PATCH',
-            body: JSON.stringify({ role, department: dept, is_active: active, role_updated_at: new Date(), 'API Call').toISOString() })
+            body: JSON.stringify({ role, department: dept, is_active: active, role_updated_at: new Date().toISOString() })
           });
           u.role = role; u.department = dept; u.is_active = active;
           ok++;
@@ -3026,9 +3025,9 @@ async function addDepartment() {
   if (deptList().includes(name)) { toast('الإدارة موجودة بالفعل','error'); return; }
   // Seed with a default "أخرى" type
   try {
-    await safeFetch(() => sbFetch('/department_requests', {
+    await sbFetch('/department_requests', {
       method:'POST',
-      body: JSON.stringify({ department: name, request_type: 'أخرى', sort_order: 99, is_active: true }), 'API Call')
+      body: JSON.stringify({ department: name, request_type: 'أخرى', sort_order: 99, is_active: true })
     });
     toast(`تمت إضافة الإدارة "${name}"`);
     await renderDeptMap();
@@ -3040,7 +3039,7 @@ async function deleteDepartment(dept) {
     `سيتم حذف الإدارة "${dept}" وجميع أنواع الطلبات المرتبطة بها.\nالتيكتات الموجودة لن تُحذف — ستحتفظ بالإدارة القديمة كنص.\nهل تريد المتابعة؟`,
     async () => {
       try {
-        await safeFetch(() => sbFetch(`/department_requests?department=eq.${encodeURIComponent(dept), 'API Call')}`, { method:'DELETE', headers: { Prefer:'return=minimal' } });
+        await sbFetch(`/department_requests?department=eq.${encodeURIComponent(dept)}`, { method:'DELETE', headers: { Prefer:'return=minimal' } });
         toast(`تم حذف الإدارة "${dept}"`);
         await renderDeptMap();
       } catch(e) { toast('فشل الحذف: '+e.message, 'error'); }
@@ -3054,9 +3053,9 @@ async function addRequestType(dept) {
   if (typesOf(dept).includes(val)) { toast('النوع موجود بالفعل','error'); return; }
   try {
     const nextOrder = (typesOf(dept).length + 1) * 10;
-    await safeFetch(() => sbFetch('/department_requests', {
+    await sbFetch('/department_requests', {
       method:'POST',
-      body: JSON.stringify({ department: dept, request_type: val, sort_order: nextOrder, is_active: true }), 'API Call')
+      body: JSON.stringify({ department: dept, request_type: val, sort_order: nextOrder, is_active: true })
     });
     toast(`تمت إضافة "${val}" لـ ${dept}`);
     await renderDeptMap();
@@ -3069,7 +3068,7 @@ async function deleteRequestType(dept, type) {
     async () => {
       try {
         const q = `/department_requests?department=eq.${encodeURIComponent(dept)}&request_type=eq.${encodeURIComponent(type)}`;
-        await safeFetch(() => sbFetch(q, { method:'DELETE', headers: { Prefer:'return=minimal' } }), 'API Call');
+        await sbFetch(q, { method:'DELETE', headers: { Prefer:'return=minimal' } });
         toast(`تم الحذف`);
         await renderDeptMap();
       } catch(e) { toast('فشل الحذف: '+e.message, 'error'); }
