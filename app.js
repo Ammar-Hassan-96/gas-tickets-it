@@ -323,15 +323,21 @@ let pendingAttachments = [];
 
 // ── SUPABASE CLIENT ──────────────────────────────────────
 async function sbFetch(path, opts={}) {
+  // نبعت الـ session token في header مخصص عشان RLS يعرف الهوية
+  // بدونها، الـ DB هترفض الطلبات بعد تفعيل الـ RLS الجديدة
+  const headers = {
+    apikey: CFG.supabaseKey,
+    Authorization: `Bearer ${CFG.supabaseKey}`,
+    'Content-Type': 'application/json',
+    Prefer: 'return=representation',
+    ...(opts.headers||{}),
+  };
+  if (S.token) {
+    headers['x-session-token'] = S.token;
+  }
   const res = await fetch(`${CFG.supabaseUrl}/rest/v1${path}`, {
     ...opts,
-    headers: {
-      apikey: CFG.supabaseKey,
-      Authorization: `Bearer ${CFG.supabaseKey}`,
-      'Content-Type': 'application/json',
-      Prefer: 'return=representation',
-      ...(opts.headers||{}),
-    },
+    headers,
   });
   if (!res.ok) {
     const t = await res.text().catch(()=>'');
