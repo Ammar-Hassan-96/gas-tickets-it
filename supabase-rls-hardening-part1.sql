@@ -21,6 +21,23 @@
 SET search_path TO public;
 
 -- ══════════════════════════════════════════════════════════
+-- STEP 0: التأكد من توفر دوال التشفير
+-- Postgres 14+ عنده sha256() مبنية. للـ legacy installations،
+-- نحتاج pgcrypto extension.
+-- ══════════════════════════════════════════════════════════
+
+-- تفعيل pgcrypto للـ backwards compatibility (ما يضرش لو متفعّل)
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
+
+-- فحص إن sha256() متاحة (المفروض تكون في Postgres 14+)
+DO $$
+BEGIN
+  PERFORM sha256('test'::bytea);
+EXCEPTION WHEN undefined_function THEN
+  RAISE EXCEPTION 'sha256() function not available. Upgrade Postgres to 14+ or use pgcrypto digest().';
+END $$;
+
+-- ══════════════════════════════════════════════════════════
 -- STEP 1: دوال مساعدة (helper functions)
 -- ══════════════════════════════════════════════════════════
 
@@ -52,6 +69,9 @@ END;
 $$;
 
 -- ─── يرجع user_id للـ session الحالية (لو valid و not expired) ─────
+-- ملاحظة: الـ client بيبعت plain token، والسيرفر (auth.mjs) بيحفظه hashed بـ SHA-256
+-- فلازم نعمل hash للـ plain token قبل ما نطابقه مع sessions.token
+-- نستخدم sha256() المبنية في Postgres 14+ (لا تحتاج pgcrypto extension)
 CREATE OR REPLACE FUNCTION app_current_user_id()
 RETURNS UUID
 LANGUAGE sql
@@ -61,7 +81,7 @@ SET search_path = public
 AS $$
   SELECT s.user_id
   FROM public.sessions s
-  WHERE s.token = encode(digest(COALESCE(app_session_token(),''), 'sha256'), 'hex')
+  WHERE s.token = encode(sha256(COALESCE(app_session_token(),'')::bytea), 'hex')
     AND s.expires_at > now()
   LIMIT 1;
 $$;
