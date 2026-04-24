@@ -9,7 +9,7 @@
 // ── CONFIG ───────────────────────────────────────────────
 const CFG = {
   supabaseUrl: 'https://rmlkhgktwologfhphtyz.supabase.co',
-  supabaseKey: 'sb_publishable_ZJvjXbR6yYDoj1BSOnsXVA_CHF19ojv',
+  supabaseKey: 'sb_publishable_g3HM0Y7GIM2A72f63Y74UA_1eJxH7dF',
   authEndpoint: '/api/auth',
   sessionKey:   'gas_it_session',
   themeKey:     'gas_it_theme',
