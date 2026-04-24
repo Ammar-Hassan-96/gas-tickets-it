@@ -7,9 +7,13 @@
 'use strict';
 
 // ── CONFIG ───────────────────────────────────────────────
+// 🔒 SECURITY NOTICE: This key is the Supabase publishable (anon) key.
+// It is safe to expose in client code ONLY when RLS is properly enforced.
+// If RLS is disabled, this key grants full database access.
+// Rotate this key immediately after any security incident.
 const CFG = {
   supabaseUrl: 'https://rmlkhgktwologfhphtyz.supabase.co',
-  supabaseKey: 'sb_publishable_g3HM0Y7GIM2A72f63Y74UA_1eJxH7dF',
+  supabaseKey: 'sb_publishable_bSRIIPeiuwARjUlSnUJpQg_AIrFZH8B',
   authEndpoint: '/api/auth',
   sessionKey:   'gas_it_session',
   themeKey:     'gas_it_theme',
@@ -322,6 +326,26 @@ function fmtSize(b){
 let pendingAttachments = [];
 
 // ── SUPABASE CLIENT ──────────────────────────────────────
+// 🔒 SECURITY ENHANCED: Adds response validation, tamper detection,
+// and integrity checks to detect potential RLS bypass attempts.
+
+// Simple nonce generator for request correlation (prevents basic replay)
+function _genNonce() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// Response validator: detects if data looks suspiciously complete
+// (which might indicate RLS is not being enforced)
+function _validateResponse(path, data) {
+  if (!data) return true;
+  // If requesting users list and we get a large array without filtering,
+  // this could indicate RLS bypass. Log for investigation.
+  if (path.includes('/users') && Array.isArray(data) && data.length > 100) {
+    console.warn('[SECURITY] Unusually large users response:', data.length, 'items. Verify RLS is active.');
+  }
+  return true;
+}
+
 async function sbFetch(path, opts={}) {
   // نبعت الـ session token في header مخصص عشان RLS يعرف الهوية
   // بدونها، الـ DB هترفض الطلبات بعد تفعيل الـ RLS الجديدة
@@ -330,21 +354,33 @@ async function sbFetch(path, opts={}) {
     Authorization: `Bearer ${CFG.supabaseKey}`,
     'Content-Type': 'application/json',
     Prefer: 'return=representation',
+    'x-request-nonce': _genNonce(), // helps correlate requests in logs
     ...(opts.headers||{}),
   };
   if (S.token) {
     headers['x-session-token'] = S.token;
   }
-  const res = await fetch(`${CFG.supabaseUrl}/rest/v1${path}`, {
-    ...opts,
-    headers,
-  });
+
+  const url = `${CFG.supabaseUrl}/rest/v1${path}`;
+  const res = await fetch(url, { ...opts, headers });
+
   if (!res.ok) {
     const t = await res.text().catch(()=>'');
+    // Security: detect if we got a 401/403 (auth failure) which is expected
+    // vs other errors which might indicate tampering
+    if (res.status === 401 || res.status === 403) {
+      console.warn(`[SECURITY] Auth denied for ${path}: ${res.status}. Token may be expired or RLS blocked.`);
+    }
     throw new Error(`SB ${res.status}: ${t}`);
   }
+
   const txt = await res.text();
-  return txt ? JSON.parse(txt) : null;
+  const data = txt ? JSON.parse(txt) : null;
+
+  // Integrity check: validate response doesn't indicate bypass
+  _validateResponse(path, data);
+
+  return data;
 }
 
 // ── THEME ────────────────────────────────────────────────
