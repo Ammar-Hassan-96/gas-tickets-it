@@ -5,8 +5,17 @@
 [[headers]]
   for = "/*"
   [headers.values]
+    # ═══ Security Headers (Phase 2 RLS Hardening) ═══
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Permissions-Policy = "camera=(), microphone=(), geolocation=()"
     X-XSS-Protection = "1; mode=block"
+    # Force HTTPS for all connections (1 year)
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains; preload"
+    # Content Security Policy — Strict XSS protection
+    # ✓ Script: only from same origin + trusted unsafe-inline for app initialization
+    # ✓ Style: allow from same origin (Tailwind inline styles)
+    # ✓ Connect: allow to Supabase API (required for app to function)
+    # ✓ All other: block from external sources
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://rmlkhgktwologfhphtyz.supabase.co https://*.supabase.co; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"

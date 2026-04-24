@@ -8,6 +8,26 @@
 SET search_path TO public;
 
 -- ══════════════════════════════════════════════════════════
+-- إزالة الـ policies القديمة (إعادة تطبيق آمنة)
+-- ══════════════════════════════════════════════════════════
+
+DROP POLICY IF EXISTS "tickets_select"           ON public.tickets;
+DROP POLICY IF EXISTS "tickets_insert"           ON public.tickets;
+DROP POLICY IF EXISTS "tickets_update"           ON public.tickets;
+DROP POLICY IF EXISTS "tickets_delete"           ON public.tickets;
+DROP POLICY IF EXISTS "comments_select"          ON public.ticket_comments;
+DROP POLICY IF EXISTS "comments_insert"          ON public.ticket_comments;
+DROP POLICY IF EXISTS "comments_delete"          ON public.ticket_comments;
+DROP POLICY IF EXISTS "notifs_select_self"       ON public.notifications;
+DROP POLICY IF EXISTS "notifs_insert"            ON public.notifications;
+DROP POLICY IF EXISTS "notifs_update_self"       ON public.notifications;
+DROP POLICY IF EXISTS "notifs_delete_self"       ON public.notifications;
+DROP POLICY IF EXISTS "dept_req_select"          ON public.department_requests;
+DROP POLICY IF EXISTS "dept_req_insert"          ON public.department_requests;
+DROP POLICY IF EXISTS "dept_req_update"          ON public.department_requests;
+DROP POLICY IF EXISTS "dept_req_delete"          ON public.department_requests;
+
+-- ══════════════════════════════════════════════════════════
 -- TICKETS — قلب الأمان
 --
 -- قواعد الرؤية (SELECT):

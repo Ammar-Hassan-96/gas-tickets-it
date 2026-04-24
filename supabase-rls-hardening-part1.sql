@@ -154,6 +154,14 @@ DROP POLICY IF EXISTS "allow_all_comments"       ON public.ticket_comments;
 DROP POLICY IF EXISTS "allow_all_notifs"         ON public.notifications;
 DROP POLICY IF EXISTS "allow_all_dept_requests"  ON public.department_requests;
 
+-- إزالة الـ policies الجديدة إن كانت موجودة (عشان إعادة تطبيق آمنة)
+DROP POLICY IF EXISTS "users_select"             ON public.users;
+DROP POLICY IF EXISTS "users_insert"             ON public.users;
+DROP POLICY IF EXISTS "users_update"             ON public.users;
+DROP POLICY IF EXISTS "users_delete"             ON public.users;
+DROP POLICY IF EXISTS "sessions_select_self"     ON public.sessions;
+DROP POLICY IF EXISTS "sessions_delete_self"     ON public.sessions;
+
 -- ══════════════════════════════════════════════════════════
 -- STEP 3: Policies على جدول USERS
 --
