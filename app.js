@@ -702,6 +702,13 @@ async function bootApp() {
   $('loginScreen').classList.remove('visible');
   $('appShell').classList.add('on');
 
+  // Sync auth.users → public.users (في حالة وجود users جديدة من Auth)
+  try {
+    await sbFetch('/rpc/manual_sync_auth_users', { method: 'POST' });
+  } catch (e) {
+    console.warn('[SYNC] Could not sync auth users:', e.message);
+  }
+
   await Promise.all([loadTickets(), loadUsers(), loadNotifications(), loadDepartmentMap()]);
 
   buildTopbar();
