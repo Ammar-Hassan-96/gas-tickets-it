@@ -129,17 +129,89 @@ export default async (req) => {
     if (!target?.length) return Response.json({ error: "المستخدم غير موجود" }, { status: 404 });
     const t = target[0];
     if (t.username === "ammar.admin") return Response.json({ error: "هذا الحساب محمي" }, { status: 403 });
-    // Permission: super_admin OR manager of the same department (and target is not manager/super_admin)
     const allowed = isSuper(requester) ||
       (isManager(requester) &&
        (requester.department||'').trim() === (t.department||'').trim() &&
        t.role !== 'manager' && t.role !== 'super_admin');
     if (!allowed) return Response.json({ error: "ليس لديك صلاحية حذف هذا المستخدم" }, { status: 403 });
     try {
+      // 1) حذف من public.users
       await sb(`/users?id=eq.${user_id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      // 2) حذف من auth.users (عشان ما يقدرش يسجل دخول)
+      await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user_id}`, {
+        method: "DELETE",
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+      });
       await audit(requester.id, requester.name, requester.role, "delete_user", "user", user_id, t.name);
       return Response.json({ ok: true });
     } catch (e) { return Response.json({ error: "فشل الحذف: " + e.message }, { status: 500 }); }
+  }
+
+  // ── CREATE AUTH USER (admin creates new employee) ─────
+  if (action === "create_auth_user") {
+    const { token, email, password, name, username, role, department } = body;
+    let requester;
+    try { requester = await validateToken(token); }
+    catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
+
+    // فقط super_admin أو manager لإدارته
+    const allowed = isSuper(requester) ||
+      (isManager(requester) &&
+       (requester.department||'').trim() === (department||'').trim() &&
+       role !== 'manager' && role !== 'super_admin');
+    if (!allowed) return Response.json({ error: "ليس لديك صلاحية إضافة مستخدم" }, { status: 403 });
+    if (!email || !password || !username) return Response.json({ error: "بيانات ناقصة" }, { status: 400 });
+    if (password.length < 8) return Response.json({ error: "كلمة المرور لازم تكون 8 أحرف على الأقل" }, { status: 400 });
+
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email, password,
+          email_confirm: true,
+          user_metadata:  { username, name, role, department: department||'' },
+          app_metadata:   { role, department: department||'' },
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.msg || JSON.stringify(data));
+      await audit(requester.id, requester.name, requester.role, "create_user", "user", data.id, username);
+      return Response.json({ ok: true, auth_id: data.id });
+    } catch (e) { return Response.json({ error: "فشل إنشاء حساب الدخول: " + e.message }, { status: 500 }); }
+  }
+
+  // ── UPDATE AUTH USER (sync metadata + optional password) ─
+  if (action === "update_auth_user") {
+    const { token, user_id, email, role, department, name, username, new_password } = body;
+    let requester;
+    try { requester = await validateToken(token); }
+    catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
+
+    const allowed = isSuper(requester) ||
+      (isManager(requester) && (requester.department||'').trim() === (department||'').trim());
+    if (!allowed) return Response.json({ error: "ليس لديك صلاحية تعديل هذا المستخدم" }, { status: 403 });
+
+    try {
+      const updateBody = {
+        email,
+        user_metadata: { username, name, role, department: department||'' },
+        app_metadata:  { role, department: department||'' },
+      };
+      if (new_password) {
+        if (new_password.length < 8) return Response.json({ error: "كلمة المرور لازم تكون 8 أحرف على الأقل" }, { status: 400 });
+        updateBody.password = new_password;
+      }
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user_id}`, {
+        method: "PUT",
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify(updateBody)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || JSON.stringify(data));
+      await audit(requester.id, requester.name, requester.role, "update_user", "user", user_id, username);
+      return Response.json({ ok: true });
+    } catch (e) { return Response.json({ error: "فشل تحديث حساب الدخول: " + e.message }, { status: 500 }); }
   }
 
   // ── DELETE TICKET (secure - server validates role) ────
@@ -320,43 +392,38 @@ export default async (req) => {
   // ── RESET USER PASSWORD (super_admin + manager of same dept) ──
   if (action === "reset_user_password") {
     const { token, user_id, new_password } = body;
-    if (!token || !user_id || !new_password) {
-      return Response.json({ error: "بيانات ناقصة" }, { status: 400 });
-    }
-    if (new_password.length < 6) {
-      return Response.json({ error: "كلمة المرور لازم تكون 6 أحرف على الأقل" }, { status: 400 });
-    }
+    if (!token || !user_id || !new_password) return Response.json({ error: "بيانات ناقصة" }, { status: 400 });
+    if (new_password.length < 8) return Response.json({ error: "كلمة المرور لازم تكون 8 أحرف على الأقل" }, { status: 400 });
+
     let requester;
     try { requester = await validateToken(token); }
     catch (e) { return Response.json({ error: "غير مصرح" }, { status: 401 }); }
-    // Get target user info
+
     let target;
     try { target = await sb(`/users?id=eq.${user_id}&select=id,name,username,role,department`); }
     catch { return Response.json({ error: "المستخدم غير موجود" }, { status: 404 }); }
     if (!target?.length) return Response.json({ error: "المستخدم غير موجود" }, { status: 404 });
     const tgt = target[0];
-    // Permission check
+
     const allowed = isSuper(requester) ||
-      (isManager(requester) && (requester.department||'').trim() === (tgt.department||'').trim() && tgt.role !== 'manager' && tgt.role !== 'super_admin');
-    if (!allowed) {
-      return Response.json({ error: "ليس لديك صلاحية تعيين كلمة مرور لهذا المستخدم" }, { status: 403 });
-    }
-    // Hash new password and update
-    const newHash = sha256(new_password);
+      (isManager(requester) && (requester.department||'').trim() === (tgt.department||'').trim() &&
+       tgt.role !== 'manager' && tgt.role !== 'super_admin');
+    if (!allowed) return Response.json({ error: "ليس لديك صلاحية تعيين كلمة مرور لهذا المستخدم" }, { status: 403 });
+
     try {
-      await sb(`/users?id=eq.${user_id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ password_hash: newHash }),
-        headers: { Prefer: "return=minimal" }
+      // تحديث كلمة السر في Supabase Auth (المصدر الحقيقي)
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user_id}`, {
+        method: "PUT",
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ password: new_password })
       });
-      // Log the action
-      await audit(requester.id, requester.name, requester.role,
-        "reset_password", "user", user_id,
-        `${target[0].name} (${target[0].username})`);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || "فشل تحديث كلمة السر");
+      }
+      await audit(requester.id, requester.name, requester.role, "reset_password", "user", user_id, `${tgt.name} (${tgt.username})`);
       return Response.json({ ok: true });
-    } catch (e) {
-      return Response.json({ error: "فشل التعيين: " + e.message }, { status: 500 });
-    }
+    } catch (e) { return Response.json({ error: "فشل التعيين: " + e.message }, { status: 500 }); }
   }
 
   return Response.json({ error: "Unknown action" }, { status: 400 });
