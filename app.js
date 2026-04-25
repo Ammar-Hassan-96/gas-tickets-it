@@ -2977,9 +2977,11 @@ async function markNotifRead(id) {
   if (!n||n.is_read) return;
   n.is_read = true;
   renderNotifPanel();
-  await fetch(CFG.authEndpoint,{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'mark_notif_read',notif_id:id})
+  // استخدام sbFetch مباشرة بالـ JWT بدل authEndpoint
+  sbFetch(`/notifications?id=eq.${id}`, {
+    method:'PATCH',
+    headers:{'Prefer':'return=minimal'},
+    body:JSON.stringify({is_read:true})
   }).catch(()=>{});
 }
 
@@ -2998,9 +3000,10 @@ async function markAllNotifRead() {
   S.notifs.forEach(n=>n.is_read=true);
   renderNotifPanel();
   if (!S.user) return;
-  await fetch(CFG.authEndpoint,{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:'mark_notif_read',user_id:S.user.id})
+  sbFetch(`/notifications?user_id=eq.${S.user.id}`, {
+    method:'PATCH',
+    headers:{'Prefer':'return=minimal'},
+    body:JSON.stringify({is_read:true})
   }).catch(()=>{});
 }
 
