@@ -2026,6 +2026,14 @@ async function submitTicket() {
   const priority = $('nt_priority').value;
   const desc     = $('nt_desc').value.trim();
 
+  // CRITICAL: Check S.users loaded
+  console.log(`[NOTIF-PRECHECK] S.users count:`, S.users?.length || 0);
+  if (!S.users || S.users.length === 0) {
+    console.error('[NOTIF-PRECHECK] ❌ S.users is EMPTY! Reloading users...');
+    await loadUsers();
+    console.log(`[NOTIF-PRECHECK] After reload:`, S.users?.length || 0);
+  }
+
   if (!title || !dept || !reqtype || !desc) {
     toast('يرجى ملء جميع الحقول','error'); return;
   }
