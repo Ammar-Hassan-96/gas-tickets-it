@@ -10,7 +10,8 @@
 const CFG = {
   supabaseUrl: 'https://rmlkhgktwologfhphtyz.supabase.co',
   supabaseKey: 'sb_publishable_bSRIIPeiuwARjUlSnUJpQg_AIrFZH8B',
-  authEndpoint: '/api/auth',  // still used for admin operations
+  // v3.5: Edge Function جوه Supabase — service_role key ما بيخرجش برّه أبداً
+  authEndpoint: 'https://rmlkhgktwologfhphtyz.supabase.co/functions/v1/auth',
   sessionKey:   'gas_it_session',
   themeKey:     'gas_it_theme',
 };
@@ -579,20 +580,24 @@ async function doLogin() {
   $('loginErr').style.display = 'none';
 
   try {
-    // الـ email قد يكون username أو email حقيقي
-    // نحاول نجيب الـ email من الـ username لو مش email
+    // v3.3: الـ username→email lookup يتم على السيرفر فقط
+    // الـ client ما بيشوفش الـ email ولا يعرف لو المستخدم موجود أصلاً
     let email = usernameOrEmail;
     if (!usernameOrEmail.includes('@')) {
-      // تحويل username → email عبر lookup (بدون RLS — anon يقدر يقرأ email بالـ username)
-      const res = await fetch(
-        `${CFG.supabaseUrl}/rest/v1/users?username=eq.${encodeURIComponent(usernameOrEmail)}&select=email`,
-        { headers: { apikey: CFG.supabaseKey, Authorization: `Bearer ${CFG.supabaseKey}` } }
-      );
+      // نبعت الـ username للـ Netlify Function تجيب الـ email بـ service_role
+      // بكده الـ anon key ما يقدرش يعمل enumerate للـ users
+      const res = await fetch(CFG.authEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'resolve_username', username: usernameOrEmail })
+      });
       const data = await res.json();
-      if (!data?.length || !data[0].email) {
-        throw new Error('اسم المستخدم غير موجود');
+      // مهم: نفس الـ error للـ username غير الموجود وكلمة السر الغلط
+      // عشان ما نكشفش معلومات عن وجود المستخدم
+      if (!res.ok || !data.email) {
+        throw new Error('اسم المستخدم أو كلمة المرور غير صحيحة');
       }
-      email = data[0].email;
+      email = data.email;
     }
 
     // تسجيل الدخول عبر Supabase Auth
@@ -619,7 +624,10 @@ async function doLogin() {
 
     await bootApp();
   } catch (err) {
-    showLoginError(err.message || 'خطأ في تسجيل الدخول');
+    // نفس رسالة الخطأ سواء كان username غلط أو password غلط
+    // عشان ما نكشفش لو المستخدم موجود أصلاً (User Enumeration)
+    const genericMsg = 'اسم المستخدم أو كلمة المرور غير صحيحة';
+    showLoginError(genericMsg);
     _loginTrack.count++;
     if (_loginTrack.count >= 5) {
       _loginTrack.lockedUntil = Date.now() + 60000;
@@ -2286,12 +2294,13 @@ async function saveUser() {
     if (S.users.find(u=>u.email===email)) { toast('البريد الإلكتروني مستخدم بالفعل','error'); return; }
 
     try {
-      // 1) إنشاء في Supabase Auth عبر Netlify Function (بيرجع auth_id)
+      // Step 1: إنشاء في Supabase Auth عبر Netlify Function
+      // الـ Netlify Function بتستخدم service_role key وبترجع auth_id
       const authRes = await fetch(CFG.authEndpoint, {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
           action: 'create_auth_user',
-          token:  S.token,
+          token: S.token,
           email, password: pass, name, username: uname,
           role, department: dept,
         })
@@ -2299,23 +2308,60 @@ async function saveUser() {
       const authData = await authRes.json();
       if (!authRes.ok) throw new Error(authData.error || 'فشل إنشاء حساب الدخول');
 
-      const authId = authData.auth_id;  // UUID من auth.users
+      const authId = authData.auth_id;
 
-      // 2) إنشاء في public.users بنفس الـ UUID
-      const saved = await sbFetch('/users',{method:'POST',body:JSON.stringify({
-        id: authId,  // مهم: نفس UUID في auth.users
-        name, username:uname, email,
-        password_hash: 'managed_by_supabase_auth',  // placeholder — auth بيدير السر
-        role, department:dept, phone:phone||null, is_active:true
-      })});
-
-      if (saved?.[0]) {
-        S.users.push(saved[0]);
+      // Step 2: تأكد إن الـ Trigger خلق الصف في public.users
+      // لو الـ Trigger شغال، الصف هيكون موجود خلال ثانية
+      // لو مش موجود، نخلقه يدوياً
+      let retries = 3;
+      let saved = null;
+      while (retries > 0) {
+        await new Promise(r => setTimeout(r, 500));
+        const existing = await sbFetch(`/users?id=eq.${authId}&select=*`);
+        if (existing?.[0]) { saved = existing[0]; break; }
+        retries--;
       }
+
+      // لو الـ Trigger ما خلقوش، نخلقه يدوياً عبر Netlify
+      if (!saved) {
+        const profileRes = await fetch(CFG.authEndpoint, {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            action: 'create_user_profile',
+            token: S.token,
+            auth_id: authId,
+            name, username: uname, email,
+            role, department: dept, phone: phone||null,
+          })
+        });
+        const profileData = await profileRes.json();
+        if (!profileRes.ok) throw new Error(profileData.error || 'فشل إنشاء الملف الشخصي');
+        saved = profileData.user;
+      } else {
+        // الـ Trigger خلق الصف لكن ممكن يكون ناقصه username/role/dept
+        // نحدثه بالبيانات الكاملة
+        await sbFetch(`/users?id=eq.${authId}`, {
+          method:'PATCH',
+          body: JSON.stringify({ name, username:uname, role, department:dept, phone:phone||null })
+        });
+        saved = { ...saved, name, username:uname, role, department:dept };
+      }
+
+      S.users.push(saved);
       closeModal('newUserModal');
       renderUsers();
-      toast(`✅ تم إضافة ${name} — كلمة السر: ${pass}`);
-    } catch(e){ toast('فشل الإضافة: '+e.message,'error'); }
+      toast(`✅ تم إضافة ${name} بنجاح`);
+
+    } catch(e) {
+      // لو المشكلة في Step 2 بس (public.users)، المستخدم اتعمل في Auth
+      // نوضح ده للمستخدم بدل ما نقوله "فشل" وبس
+      const msg = e.message || '';
+      if (msg.includes('duplicate') || msg.includes('already exists') || msg.includes('unique')) {
+        toast('البريد الإلكتروني أو اسم المستخدم موجود بالفعل','error');
+      } else {
+        toast('فشل الإضافة: ' + msg, 'error');
+      }
+    }
   }
 }
 
@@ -2421,6 +2467,8 @@ function renderReports() {
   const lastMTotal = lastMonth.length;
   const monthDiff  = thisMTotal - lastMTotal;
   const monthArrow = monthDiff>0?'↑':monthDiff<0?'↓':'—';
+  // ↑ طلبات أكتر من الشهر اللي فات = حِمل أكبر = أحمر (تحذير)
+  // ↓ طلبات أقل = أداء أفضل أو ضغط أقل = أخضر
   const monthColor = monthDiff>0?'#F87171':monthDiff<0?'#4ADE80':'var(--text-muted)';
 
   const _resetBtn = $('resetStatsBtn');
@@ -2450,7 +2498,12 @@ function renderReports() {
       ['مفتوحة', thisMonth.filter(t=>t.status==='open').length, lastMonth.filter(t=>t.status==='open').length],
     ].map(([label,curr,prev]) => {
       const diff  = curr - prev;
-      const color = diff > 0 ? '#F87171' : diff < 0 ? '#4ADE80' : 'var(--text-muted)';
+      // المغلقة: أكتر = أحسن = أخضر ↑
+      // الحرجة/المفتوحة: أكتر = أسوأ = أحمر ↑
+      const isPositiveMetric = label === 'مغلقة';
+      const color = diff === 0
+        ? 'var(--text-muted)'
+        : (diff > 0 === isPositiveMetric) ? '#4ADE80' : '#F87171';
       const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '—';
       return '<tr><td style="font-weight:500;">' + label + '</td>' +
         '<td style="font-family:var(--font-mono);font-weight:600;">' + curr + '</td>' +
@@ -2931,43 +2984,46 @@ function exportCSV() {
 }
 
 function exportExcel() {
-  // بناء XML بصيغة Excel
   const headers = ['رقم التيكت','العنوان','الإدارة المسؤولة','نوع الطلب','مقدم الطلب','قسم المقدم','الأولوية','الحالة','المعين','المرفقات','التاريخ'];
-  const rows = S.tickets.map(t=>[
-    t.ticket_number, t.title,
-    t.target_department || (CAT_L[t.category]||t.category||'—'),
+  const rows = visibleTickets().map(t => [
+    t.ticket_number,
+    t.title,
+    t.target_department || (CAT_L[t.category] || t.category || '—'),
     t.request_type || '—',
-    uname(t.created_by), udept(t.created_by),
-    PRIO_L[t.priority]||t.priority, STATUS_L[t.status]||t.status,
+    uname(t.created_by),
+    udept(t.created_by),
+    PRIO_L[t.priority] || t.priority,
+    STATUS_L[t.status] || t.status,
     t.assigned_to ? uname(t.assigned_to) : '—',
     (t.attachments && t.attachments.length) ? `${t.attachments.length} ملف` : '—',
     _d(t.created_at)
   ]);
 
-  const esc = v => String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const cell = v => `<Cell><Data ss:Type="String">${esc(v)}</Data></Cell>`;
-  const row  = cols => `<Row>${cols.map(cell).join('')}</Row>`;
+  // CSV with BOM for Excel Arabic support
+  const csvEsc = v => {
+    const s = String(v == null ? '' : v);
+    // لو فيه فاصلة أو سطر جديد أو علامة تنصيص نلف بـ quotes
+    return (s.includes(',') || s.includes('\n') || s.includes('"'))
+      ? `"${s.replace(/"/g, '""')}"` : s;
+  };
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Styles>
-  <Style ss:ID="H"><Font ss:Bold="1"/><Interior ss:Color="#1E293B" ss:Pattern="Solid"/><Font ss:Color="#FFFFFF" ss:Bold="1"/></Style>
- </Styles>
- <Worksheet ss:Name="التيكتات">
-  <Table>
-   <Row>${headers.map(h=>`<Cell ss:StyleID="H"><Data ss:Type="String">${esc(h)}</Data></Cell>`).join('')}</Row>
-   ${rows.map(row).join('\n   ')}
-  </Table>
- </Worksheet>
-</Workbook>`;
+  const lines = [
+    headers.map(csvEsc).join(','),
+    ...rows.map(r => r.map(csvEsc).join(','))
+  ];
 
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob(['\uFEFF'+xml],{type:'application/vnd.ms-excel;charset=utf-8;'}));
-  a.download = `GAS-IT-Tickets-${new Date().toISOString().slice(0,10)}.xls`;
+  // BOM (EF BB BF) + CSV content — بيخلي Excel يقرأ العربي صح
+  const csv = '\uFEFF' + lines.join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `GAS-Tickets-${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);
   a.click();
-  toast('تم تصدير Excel ✅');
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast('تم تصدير الملف ✅ — افتحه بـ Excel');
 }
 
 // ═══════════════════════════════════════════════════════

@@ -1277,9 +1277,10 @@ body {
             <input class="s-input" id="usersSearch" placeholder="بحث بالاسم أو القسم..." oninput="filterUsers(this.value)" style="width:220px;">
             <select class="s-select" onchange="filterUsersByRole(this.value)">
               <option value="">كل الأدوار</option>
+              <option value="super_admin">مدير النظام</option>
+              <option value="manager">مدير إدارة</option>
+              <option value="supervisor">مشرف إدارة</option>
               <option value="employee">موظف</option>
-              <option value="admin">IT Admin</option>
-              <option value="manager">مدير</option>
             </select>
             <button class="btn btn-gold" onclick="openNewUserModal()">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -1436,9 +1437,10 @@ body {
     <div class="modal-bd">
       <div class="fg"><label class="fl">الحالة</label>
         <select class="fsel" id="upd_status">
+          <option value="open">مفتوح</option>
           <option value="assigned">معين</option>
           <option value="in_progress">قيد التنفيذ</option>
-          
+          <option value="escalated">مصعّد</option>
           <option value="closed">مغلق</option>
         </select>
       </div>
