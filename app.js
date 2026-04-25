@@ -2220,7 +2220,7 @@ function renderUsersGrid() {
         </div>
         <div class="uc-actions">
           ${Perm.canManageUser(u) ? `<button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;" onclick="editUser('${u.id}')">تعديل</button>` : ''}
-          ${Perm.canResetUserPassword(u) ? `<button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;border-color:var(--warning);color:var(--warning);" onclick="resetUserPassword('${u.id}','${u.name.replace(/'/g,'&#39;')}')">🔑 تعيين كلمة مرور</button>` : ''}
+          ${Perm.canResetUserPassword(u) ? `<button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;border-color:var(--warning);color:var(--warning);" data-uid="${_e(u.id)}" data-uname="${_e(u.name)}" onclick="resetUserPassword(this.dataset.uid,this.dataset.uname)">🔑 تعيين كلمة مرور</button>` : ''}
           ${Perm.canDeleteUser(u) ? `<button class="btn btn-danger" style="font-size:11px;padding:5px 10px;" onclick="deleteUser('${u.id}')">حذف</button>` : ''}
         </div>
       </div>
@@ -3305,7 +3305,7 @@ async function renderDeptMap() {
               ${types.map(t => `
                 <span class="map-type-chip">
                   ${_e(t)}
-                  <button onclick="deleteRequestType('${_e(d)}','${_e(t).replace(/'/g,"\\'")}')" title="حذف">×</button>
+                  <button data-dept="${_e(d)}" data-type="${_e(t)}" onclick="deleteRequestType(this.dataset.dept,this.dataset.type)" title="حذف">×</button>
                 </span>
               `).join('') || '<span style="color:var(--text-muted);font-size:12px;">لا توجد أنواع طلبات — أضف أول نوع</span>'}
             </div>
