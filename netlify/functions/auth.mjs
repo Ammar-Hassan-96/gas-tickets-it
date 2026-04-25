@@ -3,13 +3,6 @@ import crypto from "node:crypto";
 const SUPABASE_URL = Netlify.env.get("SUPABASE_URL");
 const SUPABASE_KEY = Netlify.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-function sha256(text) {
-  return crypto.createHash("sha256").update(text).digest("hex");
-}
-function generateToken() {
-  return crypto.randomBytes(48).toString("hex");
-}
-
 async function sb(path, opts = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
     ...opts,
@@ -26,25 +19,35 @@ async function sb(path, opts = {}) {
   return text ? JSON.parse(text) : null;
 }
 
-// Validate a session token and return the user
+// Validate Supabase JWT token and return the user from public.users
+// v3.0: استخدام Supabase Auth بدل custom sessions table
 async function validateToken(token) {
   if (!token) throw new Error("No token");
-  const tokenHash = sha256(token);
-  const sessions = await sb(
-    `/sessions?token=eq.${tokenHash}&expires_at=gt.${new Date().toISOString()}&select=user_id`
-  );
-  if (!sessions?.length) throw new Error("Invalid or expired session");
+
+  // التحقق من الـ JWT عبر Supabase Auth API
+  const authRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!authRes.ok) throw new Error("Invalid or expired token");
+  const authUser = await authRes.json();
+  if (!authUser?.id) throw new Error("Invalid token payload");
+
+  // جلب بيانات المستخدم من public.users بالـ UUID
   const users = await sb(
-    `/users?id=eq.${sessions[0].user_id}&is_active=eq.true&select=id,name,username,role,department`
+    `/users?id=eq.${authUser.id}&is_active=eq.true&select=id,name,username,role,department`
   );
-  if (!users?.length) throw new Error("User not found");
+  if (!users?.length) throw new Error("User not found or inactive");
   return users[0];
 }
 
-// ── Role helpers (نسخة خادم) ──
+// ── Role helpers ──────────────────────────────────────────
 const isSuper   = (u) => u?.role === 'super_admin';
 const isManager = (u) => u?.role === 'manager';
-// هل المستخدم ده super_admin أو manager في نفس إدارة الـ target؟
+
 function canManageInDept(requester, targetDept) {
   if (isSuper(requester)) return true;
   if (isManager(requester) && (requester.department || '').trim() === (targetDept || '').trim()) return true;
