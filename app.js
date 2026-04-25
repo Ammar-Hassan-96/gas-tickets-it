@@ -1,23 +1,104 @@
 /* ═══════════════════════════════════════════════════════
-   GAS IT DESK — Application Logic
+   GAS Internal Tickets — Application Logic
    German Auto Service · Mercedes-Benz Egypt
-   Production Build v2.0
+   v3.0 — Supabase Auth
    ═══════════════════════════════════════════════════════ */
 
 'use strict';
 
 // ── CONFIG ───────────────────────────────────────────────
-// 🔒 SECURITY NOTICE: This key is the Supabase publishable (anon) key.
-// It is safe to expose in client code ONLY when RLS is properly enforced.
-// If RLS is disabled, this key grants full database access.
-// Rotate this key immediately after any security incident.
 const CFG = {
   supabaseUrl: 'https://rmlkhgktwologfhphtyz.supabase.co',
   supabaseKey: 'sb_publishable_bSRIIPeiuwARjUlSnUJpQg_AIrFZH8B',
-  authEndpoint: '/api/auth',
+  authEndpoint: '/api/auth',  // still used for admin operations
   sessionKey:   'gas_it_session',
   themeKey:     'gas_it_theme',
 };
+
+// ── SUPABASE CLIENT (baked in — no npm needed) ──────────
+// إنشاء Supabase client بسيط بيستخدم fetch مباشرة
+// الـ JWT بيتبعت تلقائياً في كل request بعد login
+const _supa = (() => {
+  let _session = null;  // Supabase Auth session (contains JWT)
+
+  return {
+    // تسجيل الدخول بـ email + password
+    async signIn(email, password) {
+      const res = await fetch(`${CFG.supabaseUrl}/auth/v1/token?grant_type=password`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: CFG.supabaseKey,
+        },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error_description || data.msg || 'فشل تسجيل الدخول');
+      _session = data;
+      return data;
+    },
+
+    // تسجيل الخروج
+    async signOut() {
+      if (!_session?.access_token) return;
+      await fetch(`${CFG.supabaseUrl}/auth/v1/logout`, {
+        method: 'POST',
+        headers: {
+          apikey: CFG.supabaseKey,
+          Authorization: `Bearer ${_session.access_token}`,
+        },
+      }).catch(() => {});
+      _session = null;
+    },
+
+    // استعادة session من localStorage
+    async restoreSession() {
+      const saved = localStorage.getItem(CFG.sessionKey);
+      if (!saved) return null;
+      try {
+        const parsed = JSON.parse(saved);
+        if (!parsed.access_token || !parsed.expires_at) return null;
+        // تحقق إن الـ token لسه valid
+        if (Date.now() / 1000 > parsed.expires_at - 60) {
+          // محاولة refresh
+          const refreshed = await this.refreshSession(parsed.refresh_token);
+          if (!refreshed) { localStorage.removeItem(CFG.sessionKey); return null; }
+          return refreshed;
+        }
+        _session = parsed;
+        return parsed;
+      } catch { return null; }
+    },
+
+    // refresh token
+    async refreshSession(refreshToken) {
+      if (!refreshToken) return null;
+      try {
+        const res = await fetch(`${CFG.supabaseUrl}/auth/v1/token?grant_type=refresh_token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: CFG.supabaseKey },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        _session = data;
+        localStorage.setItem(CFG.sessionKey, JSON.stringify(data));
+        return data;
+      } catch { return null; }
+    },
+
+    // الـ JWT الحالي
+    getToken() { return _session?.access_token || null; },
+    getSession() { return _session; },
+    setSession(s) { _session = s; },
+
+    // قراءة user_metadata من الـ JWT
+    getUserMeta() {
+      if (!_session?.user?.user_metadata) return {};
+      return _session.user.user_metadata;
+    },
+  };
+})();
 
 // ── STATE ────────────────────────────────────────────────
 const S = {
@@ -347,40 +428,48 @@ function _validateResponse(path, data) {
 }
 
 async function sbFetch(path, opts={}) {
-  // نبعت الـ session token في header مخصص عشان RLS يعرف الهوية
-  // بدونها، الـ DB هترفض الطلبات بعد تفعيل الـ RLS الجديدة
+  // v3.0: استخدام Supabase JWT بدل custom x-session-token
+  // الـ JWT بيحمل uid + user_metadata (role, department)
+  // RLS بتقرأ auth.uid() و auth.jwt() مباشرة — حماية حقيقية
+  const jwt = _supa.getToken();
+
   const headers = {
-    apikey: CFG.supabaseKey,
-    Authorization: `Bearer ${CFG.supabaseKey}`,
+    apikey:         CFG.supabaseKey,
+    Authorization:  jwt ? `Bearer ${jwt}` : `Bearer ${CFG.supabaseKey}`,
     'Content-Type': 'application/json',
-    Prefer: 'return=representation',
-    'x-request-nonce': _genNonce(), // helps correlate requests in logs
-    ...(opts.headers||{}),
+    Prefer:         'return=representation',
+    ...(opts.headers || {}),
   };
-  if (S.token) {
-    headers['x-session-token'] = S.token;
-  }
 
   const url = `${CFG.supabaseUrl}/rest/v1${path}`;
-  const res = await fetch(url, { ...opts, headers });
+  const res  = await fetch(url, { ...opts, headers });
 
   if (!res.ok) {
-    const t = await res.text().catch(()=>'');
-    // Security: detect if we got a 401/403 (auth failure) which is expected
-    // vs other errors which might indicate tampering
-    if (res.status === 401 || res.status === 403) {
-      console.warn(`[SECURITY] Auth denied for ${path}: ${res.status}. Token may be expired or RLS blocked.`);
+    const t = await res.text().catch(() => '');
+    if (res.status === 401) {
+      // JWT انتهى — محاولة refresh تلقائي
+      const session = _supa.getSession();
+      if (session?.refresh_token) {
+        const refreshed = await _supa.refreshSession(session.refresh_token);
+        if (refreshed) {
+          // إعادة المحاولة مرة واحدة بالـ token الجديد
+          headers.Authorization = `Bearer ${refreshed.access_token}`;
+          const retry = await fetch(url, { ...opts, headers });
+          if (retry.ok) {
+            const rtxt = await retry.text();
+            return rtxt ? JSON.parse(rtxt) : null;
+          }
+        }
+      }
+      // Refresh فشل — logout المستخدم
+      doLogout();
+      return null;
     }
     throw new Error(`SB ${res.status}: ${t}`);
   }
 
   const txt = await res.text();
-  const data = txt ? JSON.parse(txt) : null;
-
-  // Integrity check: validate response doesn't indicate bypass
-  _validateResponse(path, data);
-
-  return data;
+  return txt ? JSON.parse(txt) : null;
 }
 
 // ── THEME ────────────────────────────────────────────────
@@ -469,53 +558,71 @@ document.querySelectorAll('.modal-mask').forEach(m=>{
 const _loginTrack = { count: 0, lockedUntil: 0 };
 
 async function doLogin() {
-  // Check lockout
+  // Rate limiting على مستوى الـ client
   if (Date.now() < _loginTrack.lockedUntil) {
     const secs = Math.ceil((_loginTrack.lockedUntil - Date.now()) / 1000);
     showLoginError(`محاولات كثيرة — انتظر ${secs} ثانية`);
     return;
   }
 
-  const username = $('liUser').value.trim();
-  const password = $('liPass').value;
-  const errEl    = $('loginErr');
-  const btn      = $('signInBtn');
+  const usernameOrEmail = $('liUser').value.trim();
+  const password        = $('liPass').value;
+  const btn             = $('signInBtn');
 
-  if (!username || !password) {
+  if (!usernameOrEmail || !password) {
     showLoginError('يرجى إدخال اسم المستخدم وكلمة المرور');
     return;
   }
 
   btn.disabled    = true;
   btn.textContent = 'جارٍ التحقق...';
-  errEl.style.display = 'none';
+  $('loginErr').style.display = 'none';
 
   try {
-    const res  = await fetch(CFG.authEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action:'login', username, password }),
-    });
-    const data = await res.json();
-
-    if (!res.ok || !data.user) {
-      throw new Error(data.error || 'فشل تسجيل الدخول');
+    // الـ email قد يكون username أو email حقيقي
+    // نحاول نجيب الـ email من الـ username لو مش email
+    let email = usernameOrEmail;
+    if (!usernameOrEmail.includes('@')) {
+      // تحويل username → email عبر lookup (بدون RLS — anon يقدر يقرأ email بالـ username)
+      const res = await fetch(
+        `${CFG.supabaseUrl}/rest/v1/users?username=eq.${encodeURIComponent(usernameOrEmail)}&select=email`,
+        { headers: { apikey: CFG.supabaseKey, Authorization: `Bearer ${CFG.supabaseKey}` } }
+      );
+      const data = await res.json();
+      if (!data?.length || !data[0].email) {
+        throw new Error('اسم المستخدم غير موجود');
+      }
+      email = data[0].email;
     }
 
-    S.user  = data.user;
-    S.token = data.token;
-    _loginTrack.count = 0; // reset on success
-    localStorage.setItem(CFG.sessionKey, JSON.stringify({ user: data.user, token: data.token }));
+    // تسجيل الدخول عبر Supabase Auth
+    const session = await _supa.signIn(email, password);
 
-    // Apply saved theme preference
-    if (data.user.theme_pref) applyTheme(data.user.theme_pref, false);
+    // حفظ الـ session
+    localStorage.setItem(CFG.sessionKey, JSON.stringify(session));
+    _supa.setSession(session);
+
+    // جلب بيانات المستخدم من public.users
+    const userMeta = _supa.getUserMeta();
+    const authUid  = session.user.id;
+
+    // جلب كامل بيانات المستخدم من public.users بـ JWT
+    const users = await sbFetch(`/users?id=eq.${authUid}&select=*`);
+    if (!users?.length) throw new Error('المستخدم غير موجود في قاعدة البيانات');
+
+    const user = users[0];
+    S.user  = user;
+    S.token = session.access_token;  // للـ backward compat
+    _loginTrack.count = 0;
+
+    if (user.theme_pref) applyTheme(user.theme_pref, false);
 
     await bootApp();
-  } catch(err) {
-    showLoginError(err.message || 'خطأ في الاتصال بالخادم');
+  } catch (err) {
+    showLoginError(err.message || 'خطأ في تسجيل الدخول');
     _loginTrack.count++;
     if (_loginTrack.count >= 5) {
-      _loginTrack.lockedUntil = Date.now() + 60000; // lock 60 seconds
+      _loginTrack.lockedUntil = Date.now() + 60000;
       _loginTrack.count = 0;
       showLoginError('تم تجاوز الحد المسموح — انتظر 60 ثانية');
     }
@@ -531,36 +638,45 @@ function showLoginError(msg) {
 }
 
 async function tryRestoreSession() {
-  const saved = localStorage.getItem(CFG.sessionKey);
-  if (!saved) return false;
   try {
-    const { token } = JSON.parse(saved);
-    const res  = await fetch(CFG.authEndpoint, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'validate', token }),
-    });
+    const session = await _supa.restoreSession();
+    if (!session) return false;
+
+    _supa.setSession(session);
+    const authUid = session.user?.id;
+    if (!authUid) return false;
+
+    // جلب بيانات المستخدم من public.users بـ JWT
+    const headers = {
+      apikey:        CFG.supabaseKey,
+      Authorization: `Bearer ${session.access_token}`,
+    };
+    const res = await fetch(
+      `${CFG.supabaseUrl}/rest/v1/users?id=eq.${authUid}&select=*`,
+      { headers }
+    );
     if (!res.ok) { localStorage.removeItem(CFG.sessionKey); return false; }
-    const data = await res.json();
-    S.user  = data.user;
-    S.token = token;
-    if (data.user.theme_pref) applyTheme(data.user.theme_pref, false);
+    const users = await res.json();
+    if (!users?.length) { localStorage.removeItem(CFG.sessionKey); return false; }
+
+    S.user  = users[0];
+    S.token = session.access_token;
+    if (S.user.theme_pref) applyTheme(S.user.theme_pref, false);
     return true;
-  } catch { localStorage.removeItem(CFG.sessionKey); return false; }
+  } catch {
+    localStorage.removeItem(CFG.sessionKey);
+    return false;
+  }
 }
 
 function doLogout() {
-  // Stop heartbeat and SLA check
   if (S._heartbeat) { clearInterval(S._heartbeat); S._heartbeat = null; }
   if (S._slaCheck)  { clearInterval(S._slaCheck);  S._slaCheck  = null; }
   if (S._polling)   { clearInterval(S._polling);   S._polling   = null; }
-  // Invalidate session on server (fire-and-forget)
-  if (S.token) {
-    fetch(CFG.authEndpoint, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'logout', token: S.token })
-    }).catch(()=>{});
-  }
+
+  // تسجيل خروج من Supabase Auth
+  _supa.signOut().catch(() => {});
+
   S.user = S.token = null;
   S.tickets = S.users = S.notifs = [];
   localStorage.removeItem(CFG.sessionKey);
@@ -583,15 +699,17 @@ async function bootApp() {
   refreshNavCounts();
   showPage('dashboard');
 
-  // Heartbeat — ping server every 3 minutes to mark session as active
+  // Heartbeat — Supabase JWT auto-refresh بيتعمل تلقائياً في sbFetch
+  // مش محتاجين ping للـ Netlify بعد كده
+  // بس نعمل check على الـ session كل 5 دقائق عشان نـ refresh لو قرب ينتهي
   if (S._heartbeat) clearInterval(S._heartbeat);
-  S._heartbeat = setInterval(() => {
-    if (!S.token) return;
-    fetch(CFG.authEndpoint, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'ping', token: S.token })
-    }).catch(()=>{});
+  S._heartbeat = setInterval(async () => {
+    const session = _supa.getSession();
+    if (!session) return;
+    // لو الـ token هينتهي خلال 5 دقائق — refresh
+    if (session.expires_at && Date.now() / 1000 > session.expires_at - 300) {
+      await _supa.refreshSession(session.refresh_token);
+    }
   }, 3 * 60 * 1000);
 
   // SLA Check — كل 30 دقيقة تبعت تنبيه للـ admin لو تيكت اقترب من الانتهاء
