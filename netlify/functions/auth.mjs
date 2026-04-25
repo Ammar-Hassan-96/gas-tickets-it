@@ -1,258 +1,245 @@
 // ═══════════════════════════════════════════════════════════
-// GAS Internal Tickets — Netlify Function
+// GAS IT Desk — Netlify Function v4.0 COMPLETE
 // Path: netlify/functions/auth.mjs
 // ═══════════════════════════════════════════════════════════
 
 const SUPABASE_URL = "https://rmlkhgktwologfhphtyz.supabase.co";
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SUPABASE_ANON = "sb_publishable_bSRIIPeiuwARjUlSnUJpQg_AIrFZH8B";
+const SVC_KEY = () => process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-// ── CORS Headers ─────────────────────────────────────────
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
+const json = (d, s = 200) => new Response(JSON.stringify(d), { status: s, headers: { ...CORS, "Content-Type": "application/json" } });
+const err  = (m, s = 400) => json({ error: m }, s);
 
-// ── DB helper (service_role — bypasses RLS) ──────────────
-async function sb(path, opts = {}) {
+// DB via service_role (bypasses RLS)
+async function db(path, opts = {}) {
+  const key = SVC_KEY();
   const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
     ...opts,
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "return=representation",
-      ...(opts.headers ?? {}),
-    },
+    headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=representation", ...(opts.headers ?? {}) },
   });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`DB ${res.status}: ${text}`);
-  return text ? JSON.parse(text) : null;
+  const t = await res.text();
+  if (!res.ok) throw new Error(`DB ${res.status}: ${t}`);
+  return t ? JSON.parse(t) : null;
 }
 
-// ── Auth Admin helper ─────────────────────────────────────
+// Auth Admin
 async function authAdmin(path, opts = {}) {
+  const key = SVC_KEY();
   const res = await fetch(`${SUPABASE_URL}/auth/v1/admin${path}`, {
     ...opts,
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
-      ...(opts.headers ?? {}),
-    },
+    headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...(opts.headers ?? {}) },
   });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Auth ${res.status}: ${text}`);
-  return text ? JSON.parse(text) : null;
+  const t = await res.text();
+  if (!res.ok) throw new Error(`AuthAdmin ${res.status}: ${t}`);
+  return t ? JSON.parse(t) : null;
 }
 
-// ── SHA-256 hashing ───────────────────────────────────────
+// Verify Supabase JWT token → returns auth user or null
+async function verifyToken(token) {
+  if (!token) return null;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const d = await res.json();
+    return d?.id ? d : null;
+  } catch { return null; }
+}
+
+// SHA-256 helper
 async function sha256(msg) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(msg);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
 // ═══════════════════════════════════════════════════════════
-// MAIN HANDLER
-// ═══════════════════════════════════════════════════════════
+export default async function handler(req) {
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
 
-export default async function handler(req, context) {
-  // Handle preflight
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: CORS });
-  }
+  let body;
+  try { body = await req.json(); } catch { return err("Invalid JSON"); }
+  const { action, token } = body;
 
   try {
-    const body = await req.json();
-    const { action } = body;
-
-    // ──────────────────────────────────────────────────────
-    // ACTION: login
-    // ──────────────────────────────────────────────────────
-    if (action === "login") {
-      const { username, password } = body;
-      if (!username || !password) {
-        return new Response(
-          JSON.stringify({ error: "Missing username/password" }),
-          { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
-        );
-      }
-
-      // 1. Get user from public.users
-      const users = await sb(`/users?username=eq.${encodeURIComponent(username)}`);
-      if (!users || users.length === 0) {
-        return new Response(
-          JSON.stringify({ error: "Invalid credentials" }),
-          { status: 401, headers: { ...CORS, "Content-Type": "application/json" } }
-        );
-      }
-
-      const user = users[0];
-
-      // 2. Check if user is active
-      if (!user.is_active) {
-        return new Response(
-          JSON.stringify({ error: "Account disabled" }),
-          { status: 403, headers: { ...CORS, "Content-Type": "application/json" } }
-        );
-      }
-
-      // 3. Get auth.users record
-      const authUsers = await authAdmin(`/users?id=eq.${user.id}`);
-      if (!authUsers?.users || authUsers.users.length === 0) {
-        return new Response(
-          JSON.stringify({ error: "Auth user not found" }),
-          { status: 500, headers: { ...CORS, "Content-Type": "application/json" } }
-        );
-      }
-
-      const authUser = authUsers.users[0];
-      const storedHash = authUser.encrypted_password;
-
-      // 4. Hash the provided password
-      const providedHash = await sha256(password);
-
-      // 5. Compare hashes
-      if (storedHash !== providedHash) {
-        return new Response(
-          JSON.stringify({ error: "Invalid credentials" }),
-          { status: 401, headers: { ...CORS, "Content-Type": "application/json" } }
-        );
-      }
-
-      // 6. Generate session token
-      const token = crypto.randomUUID();
-      const hashedToken = await sha256(token);
-
-      // 7. Create session
-      await sb("/sessions", {
-        method: "POST",
-        body: JSON.stringify({
-          user_id: user.id,
-          token: hashedToken,
-          expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-        }),
-      });
-
-      // 8. Return success with token
-      return new Response(
-        JSON.stringify({
-          token,
-          user: {
-            id: user.id,
-            username: user.username,
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            department: user.department,
-          },
-        }),
-        { status: 200, headers: { ...CORS, "Content-Type": "application/json" } }
-      );
+    // ─────────────────────────────────────────────────────
+    // resolve_username: يحوّل username → email (للـ login)
+    // ─────────────────────────────────────────────────────
+    if (action === "resolve_username") {
+      const { username } = body;
+      if (!username) return err("Missing username");
+      const rows = await db(`/users?username=eq.${encodeURIComponent(username)}&select=email&is_active=eq.true`);
+      if (!rows?.length) return err("Not found", 404);
+      return json({ email: rows[0].email });
     }
 
-    // ──────────────────────────────────────────────────────
-    // ACTION: register
-    // ──────────────────────────────────────────────────────
-    if (action === "register") {
-      const { username, password, name, email, role, department } = body;
-
-      if (!username || !password || !email) {
-        return new Response(
-          JSON.stringify({ error: "Missing required fields" }),
-          { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
-        );
-      }
-
-      // 1. Check if username exists
-      const existingUsers = await sb(`/users?username=eq.${encodeURIComponent(username)}`);
-      if (existingUsers && existingUsers.length > 0) {
-        return new Response(
-          JSON.stringify({ error: "Username already exists" }),
-          { status: 409, headers: { ...CORS, "Content-Type": "application/json" } }
-        );
-      }
-
-      // 2. Hash password
-      const hashedPassword = await sha256(password);
-
-      // 3. Create auth.users record
-      const authUser = await authAdmin("/users", {
-        method: "POST",
-        body: JSON.stringify({
-          email,
-          password: hashedPassword,
-          email_confirm: true,
-          user_metadata: {
-            username,
-            name: name || username,
-            role: role || "employee",
-            department: department || "",
-          },
-        }),
-      });
-
-      // 4. Create public.users record
-      await sb("/users", {
-        method: "POST",
-        body: JSON.stringify({
-          id: authUser.id,
-          username,
-          name: name || username,
-          email,
-          role: role || "employee",
-          department: department || "",
-          is_active: true,
-        }),
-      });
-
-      return new Response(
-        JSON.stringify({ success: true, user_id: authUser.id }),
-        { status: 201, headers: { ...CORS, "Content-Type": "application/json" } }
-      );
+    // ─────────────────────────────────────────────────────
+    // get_sessions
+    // ─────────────────────────────────────────────────────
+    if (action === "get_sessions") {
+      const au = await verifyToken(token);
+      if (!au) return err("Unauthorized", 401);
+      const rows = await db(`/sessions?user_id=eq.${au.id}&select=id,created_at,last_seen,expires_at`);
+      return json({ sessions: rows || [] });
     }
 
-    // ──────────────────────────────────────────────────────
-    // ACTION: logout
-    // ──────────────────────────────────────────────────────
-    if (action === "logout") {
-      const { token } = body;
-      if (!token) {
-        return new Response(
-          JSON.stringify({ error: "Missing token" }),
-          { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
-        );
-      }
-
-      const hashedToken = await sha256(token);
-      await sb(`/sessions?token=eq.${hashedToken}`, { method: "DELETE" });
-
-      return new Response(
-        JSON.stringify({ success: true }),
-        { status: 200, headers: { ...CORS, "Content-Type": "application/json" } }
-      );
+    // ─────────────────────────────────────────────────────
+    // save_theme
+    // ─────────────────────────────────────────────────────
+    if (action === "save_theme") {
+      const au = await verifyToken(token);
+      const uid = au?.id || body.user_id;
+      if (!uid) return err("Unauthorized", 401);
+      await db(`/users?id=eq.${uid}`, { method: "PATCH", body: JSON.stringify({ theme_pref: body.theme }) });
+      return json({ success: true });
     }
 
-    // ──────────────────────────────────────────────────────
-    // Unknown action
-    // ──────────────────────────────────────────────────────
-    return new Response(
-      JSON.stringify({ error: "Unknown action" }),
-      { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
-    );
+    // ─────────────────────────────────────────────────────
+    // create_auth_user
+    // ─────────────────────────────────────────────────────
+    if (action === "create_auth_user") {
+      const au = await verifyToken(token);
+      if (!au) return err("Unauthorized", 401);
+      const me = await db(`/users?id=eq.${au.id}&select=role,department`);
+      if (!me?.length || !["super_admin","manager"].includes(me[0].role)) return err("Forbidden", 403);
 
-  } catch (err) {
-    console.error("Auth error:", err);
-    return new Response(
-      JSON.stringify({ error: "Internal server error" }),
-      { status: 500, headers: { ...CORS, "Content-Type": "application/json" } }
-    );
+      const { email, password, username, name, role, department } = body;
+      if (!email || !password || !username) return err("Missing fields");
+
+      const newAuth = await authAdmin("/users", {
+        method: "POST",
+        body: JSON.stringify({
+          email, password, email_confirm: true,
+          user_metadata: { username, name: name || username, role: role || "employee", department: department || "" },
+        }),
+      });
+      return json({ success: true, user_id: newAuth.id });
+    }
+
+    // ─────────────────────────────────────────────────────
+    // create_user_profile
+    // ─────────────────────────────────────────────────────
+    if (action === "create_user_profile") {
+      const au = await verifyToken(token);
+      if (!au) return err("Unauthorized", 401);
+      const { user_id, username, name, email, role, department } = body;
+      if (!user_id || !username) return err("Missing fields");
+      await db("/users", {
+        method: "POST",
+        body: JSON.stringify({ id: user_id, username, name: name || username, email, role: role || "employee", department: department || "", is_active: true }),
+      });
+      return json({ success: true });
+    }
+
+    // ─────────────────────────────────────────────────────
+    // update_auth_user
+    // ─────────────────────────────────────────────────────
+    if (action === "update_auth_user") {
+      const au = await verifyToken(token);
+      if (!au) return err("Unauthorized", 401);
+      const { user_id, email, role, department, name, username, is_active } = body;
+      if (!user_id) return err("Missing user_id");
+
+      // تحديث auth.users
+      const authUpdate = {};
+      if (email) authUpdate.email = email;
+      const existMeta = (await authAdmin(`/users/${user_id}`))?.user_metadata || {};
+      const newMeta = { ...existMeta };
+      if (name)       newMeta.name = name;
+      if (username)   newMeta.username = username;
+      if (role)       newMeta.role = role;
+      if (department !== undefined) newMeta.department = department;
+      authUpdate.user_metadata = newMeta;
+      await authAdmin(`/users/${user_id}`, { method: "PUT", body: JSON.stringify(authUpdate) });
+
+      // تحديث public.users
+      const pub = { updated_at: new Date().toISOString() };
+      if (email)     pub.email = email;
+      if (name)      pub.name = name;
+      if (username)  pub.username = username;
+      if (role)      pub.role = role;
+      if (department !== undefined) pub.department = department;
+      if (is_active !== undefined)  pub.is_active  = is_active;
+      await db(`/users?id=eq.${user_id}`, { method: "PATCH", body: JSON.stringify(pub) });
+
+      return json({ success: true });
+    }
+
+    // ─────────────────────────────────────────────────────
+    // delete_user
+    // ─────────────────────────────────────────────────────
+    if (action === "delete_user") {
+      const au = await verifyToken(token);
+      if (!au) return err("Unauthorized", 401);
+      const { user_id } = body;
+      if (!user_id) return err("Missing user_id");
+      try { await authAdmin(`/users/${user_id}`, { method: "DELETE" }); } catch {}
+      await db(`/users?id=eq.${user_id}`, { method: "DELETE" });
+      return json({ success: true });
+    }
+
+    // ─────────────────────────────────────────────────────
+    // reset_user_password
+    // ─────────────────────────────────────────────────────
+    if (action === "reset_user_password") {
+      const au = await verifyToken(token);
+      if (!au) return err("Unauthorized", 401);
+      const { user_id, new_password } = body;
+      if (!user_id || !new_password) return err("Missing fields");
+      await authAdmin(`/users/${user_id}`, { method: "PUT", body: JSON.stringify({ password: new_password }) });
+      return json({ success: true });
+    }
+
+    // ─────────────────────────────────────────────────────
+    // change_password
+    // ─────────────────────────────────────────────────────
+    if (action === "change_password") {
+      const au = await verifyToken(token);
+      if (!au) return err("Unauthorized", 401);
+      const { new_password } = body;
+      if (!new_password) return err("Missing new_password");
+      await authAdmin(`/users/${au.id}`, { method: "PUT", body: JSON.stringify({ password: new_password }) });
+      return json({ success: true });
+    }
+
+    // ─────────────────────────────────────────────────────
+    // delete_ticket
+    // ─────────────────────────────────────────────────────
+    if (action === "delete_ticket") {
+      const au = await verifyToken(token);
+      if (!au) return err("Unauthorized", 401);
+      const { ticket_id } = body;
+      if (!ticket_id) return err("Missing ticket_id");
+      await db(`/ticket_comments?ticket_id=eq.${ticket_id}`, { method: "DELETE" });
+      await db(`/tickets?id=eq.${ticket_id}`, { method: "DELETE" });
+      return json({ success: true });
+    }
+
+    // ─────────────────────────────────────────────────────
+    // mark_notif_read
+    // ─────────────────────────────────────────────────────
+    if (action === "mark_notif_read") {
+      const au = await verifyToken(token);
+      if (!au) return err("Unauthorized", 401);
+      if (body.notif_id) {
+        await db(`/notifications?id=eq.${body.notif_id}&user_id=eq.${au.id}`, { method: "PATCH", body: JSON.stringify({ is_read: true }) });
+      } else {
+        await db(`/notifications?user_id=eq.${au.id}&is_read=eq.false`, { method: "PATCH", body: JSON.stringify({ is_read: true }) });
+      }
+      return json({ success: true });
+    }
+
+    return err(`Unknown action: ${action}`);
+
+  } catch (e) {
+    console.error(`[auth.mjs] action=${action} error:`, e.message);
+    return json({ error: e.message || "Internal server error" }, 500);
   }
 }
 
-export const config = {
-  path: "/api/auth"
-};
+export const config = { path: "/api/auth" };
