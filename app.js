@@ -1803,12 +1803,19 @@ async function addComment(ticketId) {
 
     // إشعار صاحب التيكت لو المعلق مش هو نفسه (بغض النظر عن الدور)
     if (t.created_by && t.created_by !== S.user.id) {
+      console.log(`[NOTIF-COMMENT] Sending notification to ticket creator:`, t.created_by);
       sbFetch('/notifications', { method:'POST', body: JSON.stringify({
         user_id: t.created_by,
         title: `رد جديد على تيكتك: ${t.title}`,
         body: `${S.user.name}: ${text.slice(0, 60)}${text.length > 60 ? '...' : ''}`,
         is_read: false
-      })}).catch(()=>{});
+      })}).then(() => {
+        console.log(`[NOTIF-COMMENT] ✅ Notification sent successfully`);
+      }).catch(e => {
+        console.error(`[NOTIF-COMMENT] ❌ Failed:`, e);
+      });
+    } else {
+      console.log(`[NOTIF-COMMENT] Skipping notification (user is ticket creator)`);
     }
 
     openTicketDetail(ticketId);
@@ -2060,22 +2067,37 @@ async function submitTicket() {
     S.tickets.unshift(newTicket);
 
     // 3) Notify: مديرين ومشرفين الإدارة المستهدفة (بس — الموظفين العاديين يشوفوا الطلبات open في قائمتهم)
+    console.log(`[NOTIF-DEBUG] Total users in system:`, S.users.length);
+    console.log(`[NOTIF-DEBUG] Target department:`, dept);
+    console.log(`[NOTIF-DEBUG] Current user:`, S.user.id, S.user.username);
+    
     const seenIds = new Set();
     const toNotify = S.users.filter(u => {
-      if (u.id === S.user.id) return false;
-      if (seenIds.has(u.id)) return false;
-      if (u.is_active === false) return false;
-      const sameDept = (u.department || '').trim() === dept.trim();
-      if (!sameDept) return false;
-      // دلوقتي الإشعارات تروح للقيادات في الإدارة فقط
-      const isLead = u.role === 'manager' || u.role === 'supervisor' || u.role === 'admin';
-      if (!isLead) return false;
+      const checks = {
+        is_self: u.id === S.user.id,
+        already_seen: seenIds.has(u.id),
+        is_inactive: u.is_active === false,
+        dept_match: (u.department || '').trim() === dept.trim(),
+        is_lead: u.role === 'manager' || u.role === 'supervisor' || u.role === 'admin'
+      };
+      console.log(`[NOTIF-DEBUG] User ${u.username}:`, checks, `dept="${u.department}"`);
+      
+      if (checks.is_self) return false;
+      if (checks.already_seen) return false;
+      if (checks.is_inactive) return false;
+      if (!checks.dept_match) return false;
+      if (!checks.is_lead) return false;
       seenIds.add(u.id); return true;
     });
+    
+    console.log(`[NOTIF-DEBUG] Users to notify (before safety net):`, toNotify.length, toNotify.map(u => u.username));
+    
     // Safety net: لو الإدارة مفيهاش قيادات، الإشعار يروح لكل الـ super_admins
     const finalNotify = toNotify.length
       ? toNotify
       : S.users.filter(u => u.role === 'super_admin' && u.id !== S.user.id);
+    
+    console.log(`[NOTIF-DEBUG] Final users to notify:`, finalNotify.length, finalNotify.map(u => u.username));
 
     // إرسال الإشعارات مع logging محسّن
     console.log(`[NOTIF] Sending notifications to ${finalNotify.length} users:`, finalNotify.map(u => u.username));
