@@ -2236,15 +2236,14 @@ async function saveUser() {
 
   if (!name||!uname) { toast('الاسم واسم المستخدم مطلوبان','error'); return; }
   if (role !== 'super_admin' && !dept) { toast('يجب اختيار الإدارة لهذا الدور','error'); return; }
+  if (!email) { toast('البريد الإلكتروني مطلوب لتسجيل الدخول','error'); return; }
 
-  // Protect developer account from any modification
   const PROTECTED = ['ammar.admin'];
   if (S.editUserId) {
     const target = S.users.find(u=>u.id===S.editUserId);
     if (target && PROTECTED.includes(target.username)) {
       toast('هذا الحساب محمي ولا يمكن تعديله','error');
-      closeModal('newUserModal');
-      return;
+      closeModal('newUserModal'); return;
     }
   }
   if (PROTECTED.includes(uname) && !S.editUserId) {
@@ -2252,41 +2251,70 @@ async function saveUser() {
   }
 
   if (S.editUserId) {
-    // Edit
-    const payload = { name, username:uname, email:email||null, role, department:dept, phone:phone||null, is_active:active };
-    if (pass) {
-      // Hash password via subtle crypto
-      const buf  = new TextEncoder().encode(pass);
-      const hash = await crypto.subtle.digest('SHA-256', buf);
-      payload.password_hash = Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
-    }
+    // ── تعديل مستخدم موجود ──────────────────────────────
+    const payload = { name, username:uname, email, role, department:dept, phone:phone||null, is_active:active };
     try {
+      // 1) تحديث public.users
       await sbFetch(`/users?id=eq.${S.editUserId}`,{method:'PATCH',body:JSON.stringify(payload)});
+
+      // 2) تحديث auth.users عبر Netlify Function
+      const res = await fetch(CFG.authEndpoint, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          action: 'update_auth_user',
+          token:  S.token,
+          user_id: S.editUserId,
+          email, role, department: dept, name, username: uname,
+          ...(pass ? { new_password: pass } : {})
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'فشل تحديث حساب الدخول');
+
       const idx = S.users.findIndex(u=>u.id===S.editUserId);
       if (idx>-1) S.users[idx] = {...S.users[idx],...payload};
       closeModal('newUserModal');
       renderUsers();
       toast('تم تحديث بيانات المستخدم');
     } catch(e){ toast('فشل التحديث: '+e.message,'error'); }
+
   } else {
-    // New
+    // ── إضافة مستخدم جديد ───────────────────────────────
     if (!pass) { toast('كلمة المرور مطلوبة','error'); return; }
+    if (pass.length < 8) { toast('كلمة المرور لازم تكون 8 أحرف على الأقل','error'); return; }
     if (S.users.find(u=>u.username===uname)) { toast('اسم المستخدم موجود بالفعل','error'); return; }
-    const buf  = new TextEncoder().encode(pass);
-    const hash = await crypto.subtle.digest('SHA-256',buf);
-    const hashHex = Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
-    const payload = { name, username:uname, email:email||null, password_hash:hashHex, role, department:dept, phone:phone||null, is_active:true };
+    if (S.users.find(u=>u.email===email)) { toast('البريد الإلكتروني مستخدم بالفعل','error'); return; }
+
     try {
-      const saved = await sbFetch('/users',{method:'POST',body:JSON.stringify(payload)});
+      // 1) إنشاء في Supabase Auth عبر Netlify Function (بيرجع auth_id)
+      const authRes = await fetch(CFG.authEndpoint, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          action: 'create_auth_user',
+          token:  S.token,
+          email, password: pass, name, username: uname,
+          role, department: dept,
+        })
+      });
+      const authData = await authRes.json();
+      if (!authRes.ok) throw new Error(authData.error || 'فشل إنشاء حساب الدخول');
+
+      const authId = authData.auth_id;  // UUID من auth.users
+
+      // 2) إنشاء في public.users بنفس الـ UUID
+      const saved = await sbFetch('/users',{method:'POST',body:JSON.stringify({
+        id: authId,  // مهم: نفس UUID في auth.users
+        name, username:uname, email,
+        password_hash: 'managed_by_supabase_auth',  // placeholder — auth بيدير السر
+        role, department:dept, phone:phone||null, is_active:true
+      })});
+
       if (saved?.[0]) {
-        // Replace if somehow already in state, otherwise push
-        const existIdx = S.users.findIndex(u=>u.id===saved[0].id);
-        if (existIdx > -1) S.users[existIdx] = saved[0];
-        else S.users.push(saved[0]);
+        S.users.push(saved[0]);
       }
       closeModal('newUserModal');
       renderUsers();
-      toast(`تم إضافة ${name}`);
+      toast(`✅ تم إضافة ${name} — كلمة السر: ${pass}`);
     } catch(e){ toast('فشل الإضافة: '+e.message,'error'); }
   }
 }
