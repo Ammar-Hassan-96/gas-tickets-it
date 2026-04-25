@@ -1,11 +1,6 @@
 [build]
   publish = "."
-  # لا يوجد functions — كل العمليات الحساسة انتقلت لـ Supabase Edge Functions
-
-[[redirects]]
-  from = "/*"
-  to   = "/index.html"
-  status = 200
+  functions = "netlify/functions"
 
 [[headers]]
   for = "/*"

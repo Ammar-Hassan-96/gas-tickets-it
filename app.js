@@ -10,8 +10,10 @@
 const CFG = {
   supabaseUrl: 'https://rmlkhgktwologfhphtyz.supabase.co',
   supabaseKey: 'sb_publishable_bSRIIPeiuwARjUlSnUJpQg_AIrFZH8B',
-  // v3.5: Edge Function جوه Supabase — service_role key ما بيخرجش برّه أبداً
-  authEndpoint: 'https://rmlkhgktwologfhphtyz.supabase.co/functions/v1/auth',
+  // authEndpoint: يشير للـ Edge Function لو deployed، أو Netlify كـ fallback
+  // بعد نشر الـ Edge Function غيّره لـ:
+  // 'https://rmlkhgktwologfhphtyz.supabase.co/functions/v1/auth'
+  authEndpoint: '/api/auth',
   sessionKey:   'gas_it_session',
   themeKey:     'gas_it_theme',
 };
