@@ -2077,14 +2077,31 @@ async function submitTicket() {
       ? toNotify
       : S.users.filter(u => u.role === 'super_admin' && u.id !== S.user.id);
 
-    await Promise.all(finalNotify.map(u =>
-      sbFetch('/notifications', { method:'POST', body: JSON.stringify({
-        user_id: u.id,
-        title: `طلب جديد لإدارة ${dept}: ${title}`,
-        body:  `${reqtype} — من ${S.user.name} — أولوية ${PRIO_L[priority]}`,
-        is_read: false
-      })}).catch(e => { console.warn('Notif failed', u.id, e.message); })
-    ));
+    // إرسال الإشعارات مع logging محسّن
+    console.log(`[NOTIF] Sending notifications to ${finalNotify.length} users:`, finalNotify.map(u => u.username));
+    const notifResults = await Promise.allSettled(finalNotify.map(async u => {
+      try {
+        const result = await sbFetch('/notifications', { 
+          method:'POST', 
+          body: JSON.stringify({
+            user_id: u.id,
+            title: `طلب جديد لإدارة ${dept}: ${title}`,
+            body:  `${reqtype} — من ${S.user.name} — أولوية ${PRIO_L[priority]}`,
+            is_read: false
+          })
+        });
+        console.log(`[NOTIF] ✅ Sent to ${u.username}`, result);
+        return { success: true, user: u.username };
+      } catch (e) {
+        console.error(`[NOTIF] ❌ Failed for ${u.username}:`, e);
+        return { success: false, user: u.username, error: e.message };
+      }
+    }));
+    const successful = notifResults.filter(r => r.status === 'fulfilled' && r.value.success).length;
+    const failed = notifResults.length - successful;
+    if (failed > 0) {
+      console.warn(`[NOTIF] ⚠️ ${failed}/${notifResults.length} notifications failed`);
+    }
 
     closeModal('newTicketModal');
     pendingAttachments = [];
