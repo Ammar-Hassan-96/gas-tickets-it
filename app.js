@@ -788,7 +788,13 @@ function checkSLAAlerts() {
 
 async function loadTickets() {
   try {
-    S.tickets = await sbFetch('/tickets?select=*,comments:ticket_comments(*)&order=created_at.desc') || [];
+    S.tickets = await sbFetch('/tickets?select=*,comments:ticket_comments(*),creator:users!created_by(name,username,department)&order=created_at.desc') || [];
+    // إضافة creator_name و creator_dept كـ flat properties
+    S.tickets = S.tickets.map(t => ({
+      ...t,
+      creator_name: t.creator?.name || null,
+      creator_dept: t.creator?.department || null,
+    }));
   } catch { S.tickets = []; }
 }
 
@@ -1146,7 +1152,7 @@ function renderDashCharts(tickets) {
             const attachTag = (t.attachments && t.attachments.length)
               ? `<span style="font-size:10px;color:var(--gold);margin-inline-start:6px;">📎 ${t.attachments.length}</span>` : '';
             const creatorCells = showCreator
-              ? `<td><strong style="font-size:12px;">${_e(uname(t.created_by))}</strong></td>
+              ? `<td><strong style="font-size:12px;">${_e(uname(t.created_by)||t.creator_name||'—')}</strong></td>
                  <td style="font-size:11px;color:var(--text-muted);">${_e(udept(t.created_by)||'—')}</td>`
               : '';
             return `
@@ -1392,7 +1398,7 @@ function renderOutboundRows(tickets) {
       <td style="max-width:200px;">
         <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}${attachTag}</div>
       </td>
-      <td><strong>${_e(uname(t.created_by))}</strong></td>
+      <td><strong>${_e(uname(t.created_by)||t.creator_name||'—')}</strong></td>
       <td>${targetDept}</td>
       <td>${reqType}</td>
       <td>${pbadge(t.priority)}</td>
@@ -1437,7 +1443,7 @@ function renderTicketRows(tbodyId, tickets, isAdmin) {
           <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}${attachTag}</div>
           <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${_e(udept(t.created_by)||'—')}</div>
         </td>
-        <td>${_e(uname(t.created_by))}</td>
+        <td>${_e(uname(t.created_by)||t.creator_name||'—')}</td>
         <td>${targetDept}</td>
         <td>${reqType}</td>
         <td>${pbadge(t.priority)}</td>
@@ -1555,7 +1561,7 @@ async function openTicketDetail(id) {
   const outboundBanner = isOutbound
     ? `<div style="background:rgba(96,165,250,0.12);border:1px solid #60A5FA;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#60A5FA;display:flex;align-items:center;gap:10px;">
         📤 <div>
-          <strong>طلب صادر من فريقك</strong> · مقدم الطلب: ${_e(uname(t.created_by))} من إدارة ${_e(Perm.myDept())}
+          <strong>طلب صادر من فريقك</strong> · مقدم الطلب: ${_e(uname(t.created_by)||t.creator_name||'—')} من إدارة ${_e(Perm.myDept())}
           <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">يمكنك المتابعة والرد بتعليقات · تحديث الحالة يتم من إدارة <strong>${_e(t.target_department||'—')}</strong></div>
         </div>
       </div>`
@@ -1641,7 +1647,7 @@ async function openTicketDetail(id) {
           ['نوع الطلب', t.request_type
               ? `<span class="reqtype-chip">${_e(t.request_type)}</span>`
               : '—'],
-          ['مقدم الطلب', _e(uname(t.created_by))],
+          ['مقدم الطلب', _e(uname(t.created_by)||t.creator_name||'—')],
           ['قسم المقدم', _e(udept(t.created_by))],
           ['المعين',     _e(t.assigned_to?uname(t.assigned_to):'غير معين')],
           ['التاريخ',    `<span style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</span>`],
@@ -3274,7 +3280,7 @@ document.addEventListener('click',e=>{
 function exportCSV() {
   const rows = [['رقم التيكت','العنوان','مقدم الطلب','القسم','الأولوية','الحالة','المعين','التاريخ']];
   S.tickets.forEach(t=>{
-    rows.push([t.ticket_number,t.title,uname(t.created_by),udept(t.created_by),PRIO_L[t.priority],STATUS_L[t.status],t.assigned_to?uname(t.assigned_to):'—',_d(t.created_at)]);
+    rows.push([t.ticket_number,t.title,(uname(t.created_by)||t.creator_name||'—'),udept(t.created_by),PRIO_L[t.priority],STATUS_L[t.status],t.assigned_to?uname(t.assigned_to):'—',_d(t.created_at)]);
   });
   const csv = rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
   const a = document.createElement('a');
@@ -3291,7 +3297,7 @@ function exportExcel() {
     t.title,
     t.target_department || (CAT_L[t.category] || t.category || '—'),
     t.request_type || '—',
-    uname(t.created_by),
+    (uname(t.created_by)||t.creator_name||'—'),
     udept(t.created_by),
     PRIO_L[t.priority] || t.priority,
     STATUS_L[t.status] || t.status,
@@ -3644,7 +3650,7 @@ function renderArchive() {
               <tr>
                 <td><span class="tnum">${_e(t.ticket_number)}</span></td>
                 <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}</td>
-                <td>${_e(uname(t.created_by))}</td>
+                <td>${_e(uname(t.created_by)||t.creator_name||'—')}</td>
                 <td>${pbadge(t.priority)}</td>
                 <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
                 <td>
@@ -3671,7 +3677,7 @@ function filterArchive(q) {
     <tr>
       <td><span class="tnum">${_e(t.ticket_number)}</span></td>
       <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}</td>
-      <td>${_e(uname(t.created_by))}</td>
+      <td>${_e(uname(t.created_by)||t.creator_name||'—')}</td>
       <td>${pbadge(t.priority)}</td>
       <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
       <td>
