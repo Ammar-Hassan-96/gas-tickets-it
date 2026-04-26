@@ -2932,7 +2932,7 @@ async function confirmResetAllTickets() {
         toast(data?.message || 'تم تصفير النظام بنجاح ✅', 'success');
         S.tickets = [];
         await loadTickets();
-        renderPage(S.page);
+        showPage(S.page || 'reports');
       } catch (e) {
         toast('حدث خطأ: ' + (e.message || 'غير معروف'), 'error');
       }
