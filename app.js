@@ -380,7 +380,7 @@ function visibleUsers() {
 const badge  = (t,c) => `<span class="badge ${c}">${_e(t)}</span>`;
 const sbadge = s => badge(STATUS_L[s]||s, STATUS_C[s]||'b-open');
 const pbadge = p => badge(PRIO_L[p]||p,   PRIO_C[p]||'b-med');
-const uname  = id => S.users.find(u=>u.id===id)?.name || '—';
+const uname  = id => S.users.find(u=>u.id===id)?.name || null;
 const udept  = id => S.users.find(u=>u.id===id)?.department || '—';
 
 // ── ATTACHMENT HELPERS ──────────────────────────────────
@@ -1571,8 +1571,8 @@ async function openTicketDetail(id) {
   const comments = t.comments || [];
 
   const timelineItems = [
-    { author: uname(t.created_by), action:'فتح التيكت', time:t.created_at, text:t.description, dot:'var(--gold)' },
-    ...comments.map(c=>({ author:uname(c.user_id)||c.author_name||'—', action:'تعليق', time:c.created_at, text:c.content, dot:'#60A5FA' }))
+    { author: uname(t.created_by)||t.creator_name||'—', action:'فتح التيكت', time:t.created_at, text:t.description, dot:'var(--gold)' },
+    ...comments.map(c=>({ author: uname(c.user_id) !== '—' ? uname(c.user_id) : (c.author_name||'—'), action:'تعليق', time:c.created_at, text:c.content, dot:'#60A5FA' }))
   ];
 
   $('detailGrid').innerHTML = `
