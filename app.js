@@ -2767,17 +2767,24 @@ function _renderReportsContent() {
     <div class="tbl-wrap" style="margin-bottom:20px;">
       <div class="tbl-head">
         <span class="tbl-head-title">تقييمات الموظفين</span>
-        <span style="font-size:12px;color:var(--text-muted);">${rated.length} تقييم</span>
+        <span style="font-size:12px;color:var(--text-muted);">${rated.length} تقييم · متوسط ${avgRating ? avgRating + ' ★' : '—'}</span>
       </div>
       <table class="data-tbl">
-        <thead><tr><th>التيكت</th><th>العنوان</th><th>التقييم</th><th>التعليق</th><th>تاريخ التقييم</th></tr></thead>
-        <tbody>${rated.sort((a,b) => new Date(b.rated_at||b.updated_at) - new Date(a.rated_at||a.updated_at)).slice(0,10).map(t => `<tr>
-          <td><span class="tnum">${_e(t.ticket_number)}</span></td>
-          <td>${_e(t.title)}</td>
-          <td style="color:#F59E0B;letter-spacing:1px;">${stars(t.rating)}</td>
-          <td style="color:var(--text-muted);font-size:12px;">${_e(t.rating_comment||'—')}</td>
-          <td style="font-size:11px;color:var(--text-muted);">${t.rated_at ? _d(t.rated_at) : '—'}</td>
-        </tr>`).join('')}</tbody>
+        <thead><tr><th>رقم التيكت</th><th>العنوان</th><th>مقدم الطلب</th><th>القسم</th><th>التقييم</th><th>التعليق</th><th>تاريخ التقييم</th></tr></thead>
+        <tbody>${rated.sort((a,b) => new Date(b.rated_at||b.updated_at) - new Date(a.rated_at||a.updated_at)).map(t => {
+          const creator = S.users.find(u => u.id === t.created_by);
+          const creatorName = creator?.name || uname(t.created_by) || '—';
+          const creatorDept = creator?.department || udept(t.created_by) || '—';
+          return `<tr style="cursor:pointer;" onclick="openTicketDetail('${t.id}')">
+            <td><span class="tnum" style="color:var(--gold);">${_e(t.ticket_number)}</span></td>
+            <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}</td>
+            <td><strong>${_e(creatorName)}</strong></td>
+            <td><span class="dept-chip">${_e(creatorDept)}</span></td>
+            <td style="color:#F59E0B;letter-spacing:2px;font-size:15px;">${stars(t.rating)}<span style="font-size:11px;color:var(--text-muted);margin-inline-start:4px;">(${t.rating}/5)</span></td>
+            <td style="color:var(--text-muted);font-size:12px;max-width:140px;">${_e(t.rating_comment||'—')}</td>
+            <td style="font-size:11px;color:var(--text-muted);white-space:nowrap;">${t.rated_at ? _d(t.rated_at) : '—'}</td>
+          </tr>`;
+        }).join('')}</tbody>
       </table>
     </div>` : '';
 
