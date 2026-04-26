@@ -1492,9 +1492,9 @@ body {
     <div class="modal-bd">
       <form onsubmit="event.preventDefault(); saveUser();" autocomplete="off">
       <div class="fg-2">
-        <div class="fg"><label class="fl">الاسم الكامل *</label><input class="fi" id="nu_name" placeholder="الاسم الكامل"></div>
-        <div class="fg"><label class="fl">اسم المستخدم *</label><input class="fi" id="nu_uname" placeholder="username"></div>
-        <div class="fg"><label class="fl">البريد الإلكتروني</label><input class="fi" id="nu_email" placeholder="email@gas.com.eg" type="email"></div>
+        <div class="fg"><label class="fl">الاسم الكامل *</label><input class="fi" id="nu_name" placeholder="الاسم الكامل" autocomplete="name"></div>
+        <div class="fg"><label class="fl">اسم المستخدم *</label><input class="fi" id="nu_uname" placeholder="username" autocomplete="username"></div>
+        <div class="fg"><label class="fl">البريد الإلكتروني</label><input class="fi" id="nu_email" placeholder="email@gas.com.eg" type="email" autocomplete="email"></div>
         <div class="fg"><label class="fl">كلمة المرور <span id="passRequired">*</span></label><input class="fi" id="nu_pass" placeholder="••••••••" type="password" autocomplete="new-password"></div>
         <div class="fg"><label class="fl">الدور *</label>
           <select class="fsel" id="nu_role">
