@@ -3036,13 +3036,10 @@ async function renderAuditLog() {
 async function resetAuditLog() {
   showConfirm('⚠️', 'مسح سجل العمليات', 'هل أنت متأكد من مسح كل سجل العمليات؟\nلا يمكن التراجع عن هذا الإجراء.', async ()=>{
     try {
-      const res = await fetch(CFG.authEndpoint, {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ action:'reset_audit_log', token:S.token })
+      await sbFetch('/audit_logs?id=neq.00000000-0000-0000-0000-000000000000', {
+        method: 'DELETE',
+        headers: { 'Prefer': 'return=minimal' }
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'فشل المسح');
       toast('تم مسح سجل العمليات بنجاح');
       renderAuditLog();
     } catch(e) { toast('فشل: '+e.message, 'error'); }
