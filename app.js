@@ -2415,7 +2415,8 @@ async function saveUser() {
       const authData = await authRes.json();
       if (!authRes.ok) throw new Error(authData.error || 'فشل إنشاء حساب الدخول');
 
-      const authId = authData.auth_id;
+      const authId = authData.auth_id || authData.user_id;
+      if (!authId) throw new Error('لم يتم الحصول على معرف المستخدم');
 
       // Step 2: تأكد إن الـ Trigger خلق الصف في public.users
       // لو الـ Trigger شغال، الصف هيكون موجود خلال ثانية
