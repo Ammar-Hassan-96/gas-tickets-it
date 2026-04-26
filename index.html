@@ -1034,12 +1034,13 @@ body {
 
     <div class="login-error" id="loginErr"></div>
 
-    <label class="f-label">اسم المستخدم</label>
-    <input type="text"     class="f-input" id="liUser" placeholder="أدخل اسم المستخدم" autocomplete="username">
-    <label class="f-label">كلمة المرور</label>
-    <input type="password" class="f-input" id="liPass" placeholder="••••••••" autocomplete="current-password">
-
-    <button class="btn-signin" id="signInBtn" onclick="doLogin()">تسجيل الدخول</button>
+    <form onsubmit="event.preventDefault(); doLogin();" autocomplete="on">
+      <label class="f-label">اسم المستخدم</label>
+      <input type="text"     class="f-input" id="liUser" placeholder="أدخل اسم المستخدم" autocomplete="username">
+      <label class="f-label">كلمة المرور</label>
+      <input type="password" class="f-input" id="liPass" placeholder="••••••••" autocomplete="current-password">
+      <button class="btn-signin" id="signInBtn" type="submit">تسجيل الدخول</button>
+    </form>
   </div>
 </div>
 
@@ -1493,7 +1494,7 @@ body {
         <div class="fg"><label class="fl">الاسم الكامل *</label><input class="fi" id="nu_name" placeholder="الاسم الكامل"></div>
         <div class="fg"><label class="fl">اسم المستخدم *</label><input class="fi" id="nu_uname" placeholder="username"></div>
         <div class="fg"><label class="fl">البريد الإلكتروني</label><input class="fi" id="nu_email" placeholder="email@gas.com.eg" type="email"></div>
-        <div class="fg"><label class="fl">كلمة المرور <span id="passRequired">*</span></label><input class="fi" id="nu_pass" placeholder="••••••••" type="password"></div>
+        <div class="fg"><label class="fl">كلمة المرور <span id="passRequired">*</span></label><input class="fi" id="nu_pass" placeholder="••••••••" type="password" autocomplete="new-password"></div>
         <div class="fg"><label class="fl">الدور *</label>
           <select class="fsel" id="nu_role">
             <option value="employee">موظف</option>
