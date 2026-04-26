@@ -3676,3 +3676,141 @@ window.addEventListener('DOMContentLoaded', async ()=>{
     $('loginScreen').classList.add('visible');
   }
 });
+
+// ═══════════════════════════════════════════════════════
+//  PWA — Service Worker + Install Banner
+// ═══════════════════════════════════════════════════════
+
+// 1. تسجيل الـ Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(reg => {
+        console.log('[PWA] Service Worker registered:', reg.scope);
+
+        // لو في update جديد
+        reg.addEventListener('updatefound', () => {
+          const newSW = reg.installing;
+          newSW?.addEventListener('statechange', () => {
+            if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
+              showPWAUpdateBanner();
+            }
+          });
+        });
+      })
+      .catch(err => console.warn('[PWA] SW registration failed:', err));
+
+    // استقبال رسائل من الـ SW
+    navigator.serviceWorker.addEventListener('message', e => {
+      if (e.data?.type === 'NOTIF_CLICK' && e.data.url) {
+        window.focus();
+      }
+    });
+  });
+}
+
+// 2. Install Banner — زر "أضف للشاشة الرئيسية"
+let _pwaInstallEvent = null;
+
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  _pwaInstallEvent = e;
+  showPWAInstallBanner();
+});
+
+window.addEventListener('appinstalled', () => {
+  hidePWAInstallBanner();
+  toast('تم تثبيت التطبيق بنجاح! 🎉', 'success');
+  _pwaInstallEvent = null;
+});
+
+function showPWAInstallBanner() {
+  if (document.getElementById('pwaBanner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'pwaBanner';
+  banner.innerHTML = `
+    <div style="
+      position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+      background:var(--bg-card);border:1px solid var(--gold);
+      border-radius:12px;padding:14px 20px;
+      display:flex;align-items:center;gap:12px;
+      box-shadow:0 8px 32px rgba(0,0,0,.5);
+      z-index:9999;max-width:360px;width:calc(100% - 40px);
+      animation:slideUp .3s ease;
+    ">
+      <span style="font-size:28px;flex-shrink:0;">📱</span>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;font-size:13px;color:var(--gold);margin-bottom:2px;">أضف التطبيق لشاشتك!</div>
+        <div style="font-size:11px;color:var(--text-muted);">شغّل GAS Portal زي أي app على موبايلك</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-shrink:0;">
+        <button onclick="installPWA()" style="
+          background:var(--gold);color:#0A0A0C;
+          border:none;border-radius:8px;
+          padding:8px 14px;font-size:12px;
+          font-weight:700;cursor:pointer;
+          font-family:inherit;
+        ">تثبيت</button>
+        <button onclick="hidePWAInstallBanner()" style="
+          background:transparent;color:var(--text-muted);
+          border:1px solid var(--border);border-radius:8px;
+          padding:8px 10px;font-size:12px;
+          cursor:pointer;font-family:inherit;
+        ">لاحقاً</button>
+      </div>
+    </div>
+    <style>
+      @keyframes slideUp {
+        from { opacity:0; transform:translateX(-50%) translateY(20px); }
+        to   { opacity:1; transform:translateX(-50%) translateY(0); }
+      }
+    </style>
+  `;
+  document.body.appendChild(banner);
+}
+
+function hidePWAInstallBanner() {
+  document.getElementById('pwaBanner')?.remove();
+}
+
+async function installPWA() {
+  if (!_pwaInstallEvent) return;
+  hidePWAInstallBanner();
+  _pwaInstallEvent.prompt();
+  const { outcome } = await _pwaInstallEvent.userChoice;
+  if (outcome === 'accepted') {
+    toast('جارٍ تثبيت التطبيق...', 'success');
+  }
+  _pwaInstallEvent = null;
+}
+
+function showPWAUpdateBanner() {
+  if (document.getElementById('pwaUpdateBanner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'pwaUpdateBanner';
+  banner.innerHTML = `
+    <div style="
+      position:fixed;top:70px;left:50%;transform:translateX(-50%);
+      background:var(--bg-card);border:1px solid #60A5FA;
+      border-radius:12px;padding:12px 18px;
+      display:flex;align-items:center;gap:10px;
+      box-shadow:0 8px 32px rgba(0,0,0,.5);
+      z-index:9999;max-width:340px;width:calc(100% - 40px);
+    ">
+      <span style="font-size:22px;">🆕</span>
+      <div style="flex:1;font-size:12px;">
+        <div style="font-weight:700;color:#60A5FA;margin-bottom:2px;">تحديث جديد متاح!</div>
+        <div style="color:var(--text-muted);">حدّث الصفحة لتطبيق التحديثات</div>
+      </div>
+      <button onclick="location.reload()" style="
+        background:#60A5FA;color:#0A0A0C;
+        border:none;border-radius:8px;
+        padding:7px 12px;font-size:12px;
+        font-weight:700;cursor:pointer;
+        font-family:inherit;
+      ">تحديث</button>
+    </div>
+  `;
+  document.body.appendChild(banner);
+}
+
