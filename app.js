@@ -2567,6 +2567,17 @@ async function doResetUserPassword() {
 // ═══════════════════════════════════════════════════════
 function renderReports() {
   const isLead  = Perm.isDeptLead() || Perm.isSuper();
+
+  // تحديث التيكتات أولاً عشان نشوف أحدث التقييمات
+  if (isLead) {
+    loadTickets().then(() => _renderReportsContent());
+    return;
+  }
+  _renderReportsContent();
+}
+
+function _renderReportsContent() {
+  const isLead  = Perm.isDeptLead() || Perm.isSuper();
   const tickets = Perm.isSuper() ? S.tickets : visibleTickets();
 
   const now            = new Date();
