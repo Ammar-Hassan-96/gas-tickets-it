@@ -1572,7 +1572,7 @@ async function openTicketDetail(id) {
 
   const timelineItems = [
     { author: uname(t.created_by)||t.creator_name||'—', action:'فتح التيكت', time:t.created_at, text:t.description, dot:'var(--gold)' },
-    ...comments.map(c=>({ author: uname(c.user_id) !== '—' ? uname(c.user_id) : (c.author_name||'—'), action:'تعليق', time:c.created_at, text:c.content, dot:'#60A5FA' }))
+    ...comments.map(c=>({ author: uname(c.user_id) || c.author_name || '—', action:'تعليق', time:c.created_at, text:c.content, dot:'#60A5FA' }))
   ];
 
   $('detailGrid').innerHTML = `
