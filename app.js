@@ -2623,6 +2623,9 @@ function _renderReportsContent() {
   const _resetBtn = $('resetStatsBtn');
   if (_resetBtn) _resetBtn.style.display = Perm.isSuper() ? '' : 'none';
 
+  const _resetAllBtn = $('resetAllTicketsBtn');
+  if (_resetAllBtn) _resetAllBtn.style.display = Perm.isSuper() ? '' : 'none';
+
   // ── Stats Cards ──────────────────────────────────────
   const statsCards = [
     ['معدل الإغلاق',     total ? resRate + '%' : '—', 'من إجمالي التيكتات', '#4ADE80'],
@@ -2910,6 +2913,31 @@ function _renderReportsContent() {
       </table>
     </div>
   ` + ratingsHtml;
+}
+
+
+// ═══════════════════════════════════════════════════════
+//  بداية جديدة — حذف كل التيكتات وتصفير العداد
+// ═══════════════════════════════════════════════════════
+async function confirmResetAllTickets() {
+  if (!Perm.isSuper()) return;
+  showConfirm(
+    '🗑️',
+    'بداية جديدة — حذف كل التيكتات',
+    '⚠️ تحذير: هذا الإجراء لا يمكن التراجع عنه!\n\nسيتم:\n• حذف جميع التيكتات نهائياً\n• حذف كل التعليقات\n• تصفير العداد من GAS-XXXX-0001\n\nهل أنت متأكد تماماً؟',
+    async () => {
+      try {
+        const result = await sbFetch('/rpc/reset_all_tickets', { method: 'POST', body: JSON.stringify({}) });
+        const data = Array.isArray(result) ? result[0] : result;
+        toast(data?.message || 'تم تصفير النظام بنجاح ✅', 'success');
+        S.tickets = [];
+        await loadTickets();
+        renderPage(S.page);
+      } catch (e) {
+        toast('حدث خطأ: ' + (e.message || 'غير معروف'), 'error');
+      }
+    }
+  );
 }
 
 async function confirmResetStats() {
