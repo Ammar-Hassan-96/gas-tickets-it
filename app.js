@@ -415,11 +415,7 @@ let pendingAttachments = [];
 // and integrity checks to detect potential RLS bypass attempts.
 
 // Simple nonce generator for request correlation (prevents basic replay)
-function _genNonce() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-}
-
-// Response validator: detects if data looks suspiciously complete
+// Response validator: detects RLS bypass attempts
 // (which might indicate RLS is not being enforced)
 function _validateResponse(path, data) {
   if (!data) return true;
@@ -473,7 +469,9 @@ async function sbFetch(path, opts={}) {
   }
 
   const txt = await res.text();
-  return txt ? JSON.parse(txt) : null;
+  const parsed = txt ? JSON.parse(txt) : null;
+  _validateResponse(path, parsed);
+  return parsed;
 }
 
 // ── THEME ────────────────────────────────────────────────
@@ -2358,6 +2356,9 @@ async function saveUser() {
   if (!name||!uname) { toast('الاسم واسم المستخدم مطلوبان','error'); return; }
   if (role !== 'super_admin' && !dept) { toast('يجب اختيار الإدارة لهذا الدور','error'); return; }
   if (!email) { toast('البريد الإلكتروني مطلوب لتسجيل الدخول','error'); return; }
+  if (!S.editUserId && !pass) { toast('كلمة المرور مطلوبة لمستخدم جديد','error'); return; }
+  if (!S.editUserId && pass.length < 8) { toast('⚠️ كلمة المرور يجب أن تكون 8 أحرف على الأقل','error'); return; }
+  if (pass && pass.length > 0 && pass.length < 8) { toast('⚠️ كلمة المرور يجب أن تكون 8 أحرف على الأقل','error'); return; }
 
   const PROTECTED = ['ammar.admin'];
   if (S.editUserId) {
