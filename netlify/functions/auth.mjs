@@ -118,7 +118,7 @@ export default async function handler(req) {
           user_metadata: { username, name: name || username, role: role || "employee", department: department || "" },
         }),
       });
-      return json({ success: true, user_id: newAuth.id });
+      return json({ success: true, user_id: newAuth.id, auth_id: newAuth.id });
     }
 
     // ─────────────────────────────────────────────────────
