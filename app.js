@@ -1870,19 +1870,15 @@ async function addComment(ticketId) {
 
     // إشعار صاحب التيكت لو المعلق مش هو نفسه (بغض النظر عن الدور)
     if (t.created_by && t.created_by !== S.user.id) {
-      console.log(`[NOTIF-COMMENT] Sending notification to ticket creator:`, t.created_by);
       sbFetch('/notifications', { method:'POST', body: JSON.stringify({
         user_id: t.created_by,
         title: `رد جديد على تيكتك: ${t.title}`,
         body: `${S.user.name}: ${text.slice(0, 60)}${text.length > 60 ? '...' : ''}`,
         is_read: false
       })}).then(() => {
-        console.log(`[NOTIF-COMMENT] ✅ Notification sent successfully`);
       }).catch(e => {
-        console.error(`[NOTIF-COMMENT] ❌ Failed:`, e);
       });
     } else {
-      console.log(`[NOTIF-COMMENT] Skipping notification (user is ticket creator)`);
     }
 
     openTicketDetail(ticketId);
@@ -2094,11 +2090,8 @@ async function submitTicket() {
   const desc     = $('nt_desc').value.trim();
 
   // CRITICAL: Check S.users loaded
-  console.log(`[NOTIF-PRECHECK] S.users count:`, S.users?.length || 0);
   if (!S.users || S.users.length === 0) {
-    console.error('[NOTIF-PRECHECK] ❌ S.users is EMPTY! Reloading users...');
     await loadUsers();
-    console.log(`[NOTIF-PRECHECK] After reload:`, S.users?.length || 0);
   }
 
   if (!title || !dept || !reqtype || !desc) {
@@ -2142,9 +2135,6 @@ async function submitTicket() {
     S.tickets.unshift(newTicket);
 
     // 3) Notify: مديرين ومشرفين الإدارة المستهدفة (بس — الموظفين العاديين يشوفوا الطلبات open في قائمتهم)
-    console.log(`[NOTIF-DEBUG] Total users in system:`, S.users.length);
-    console.log(`[NOTIF-DEBUG] Target department:`, dept);
-    console.log(`[NOTIF-DEBUG] Current user:`, S.user.id, S.user.username);
     
     const seenIds = new Set();
     const toNotify = S.users.filter(u => {
@@ -2155,7 +2145,6 @@ async function submitTicket() {
         dept_match: (u.department || '').trim() === dept.trim(),
         is_lead: u.role === 'manager' || u.role === 'supervisor' || u.role === 'admin'
       };
-      console.log(`[NOTIF-DEBUG] User ${u.username}:`, checks, `dept="${u.department}"`);
       
       if (checks.is_self) return false;
       if (checks.already_seen) return false;
@@ -2165,17 +2154,14 @@ async function submitTicket() {
       seenIds.add(u.id); return true;
     });
     
-    console.log(`[NOTIF-DEBUG] Users to notify (before safety net):`, toNotify.length, toNotify.map(u => u.username));
     
     // Safety net: لو الإدارة مفيهاش قيادات، الإشعار يروح لكل الـ super_admins
     const finalNotify = toNotify.length
       ? toNotify
       : S.users.filter(u => u.role === 'super_admin' && u.id !== S.user.id);
     
-    console.log(`[NOTIF-DEBUG] Final users to notify:`, finalNotify.length, finalNotify.map(u => u.username));
 
     // إرسال الإشعارات مع logging محسّن
-    console.log(`[NOTIF] Sending notifications to ${finalNotify.length} users:`, finalNotify.map(u => u.username));
     const notifResults = await Promise.allSettled(finalNotify.map(async u => {
       try {
         const result = await sbFetch('/notifications', { 
@@ -2187,10 +2173,8 @@ async function submitTicket() {
             is_read: false
           })
         });
-        console.log(`[NOTIF] ✅ Sent to ${u.username}`, result);
         return { success: true, user: u.username };
       } catch (e) {
-        console.error(`[NOTIF] ❌ Failed for ${u.username}:`, e);
         return { success: false, user: u.username, error: e.message };
       }
     }));

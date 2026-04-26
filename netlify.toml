@@ -9,6 +9,16 @@
 [functions]
   node_bundler = "esbuild"
 
+# Security Headers — كل الصفحات
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    X-XSS-Protection = "1; mode=block"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
 # Service Worker — لازم يكون بدون cache
 [[headers]]
   for = "/sw.js"
@@ -22,4 +32,5 @@
   [headers.values]
     Cache-Control = "public, max-age=86400"
     Content-Type = "application/manifest+json"
+
 
