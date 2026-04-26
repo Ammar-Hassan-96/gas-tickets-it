@@ -372,8 +372,9 @@ function outboundTickets() {
 // فلترة المستخدمين المرئيين للمستخدم الحالي
 function visibleUsers() {
   if (Perm.isSuper()) return S.users;
-  if (Perm.isManager()) return S.users.filter(u => u.department === Perm.myDept());
-  return S.users;  // الباقي ما يشوفش صفحة المستخدمين أصلاً
+  if (Perm.isManager() || Perm.isSupervisor()) return S.users.filter(u => u.department === Perm.myDept());
+  // employee: يشوف نفسه بس في صفحة المستخدمين
+  return S.users.filter(u => u.id === S.user?.id);
 }
 
 const badge  = (t,c) => `<span class="badge ${c}">${_e(t)}</span>`;
@@ -793,8 +794,12 @@ async function loadTickets() {
 
 async function loadUsers() {
   try {
-    const all = await sbFetch('/users?select=id,name,username,email,role,department,phone,is_active&order=name') || [];
-    // Hide developer/system accounts from all views
+    // super_admin/manager يشوفوا كل البيانات — employee يشوف اسم + دور + قسم بس
+    const isLead = S.user && ['super_admin','manager','supervisor','admin'].includes(S.user.role);
+    const fields = isLead
+      ? 'id,name,username,email,role,department,phone,is_active'
+      : 'id,name,username,role,department,is_active';
+    const all = await sbFetch(`/users?select=${fields}&order=name`) || [];
     S.users = all.filter(u => u.username !== 'ammar.admin');
   } catch { S.users = []; }
 }
