@@ -7,12 +7,23 @@ const SUPABASE_URL = "https://rmlkhgktwologfhphtyz.supabase.co";
 const SUPABASE_ANON = "sb_publishable_bSRIIPeiuwARjUlSnUJpQg_AIrFZH8B";
 const SVC_KEY = () => process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
-const json = (d, s = 200) => new Response(JSON.stringify(d), { status: s, headers: { ...CORS, "Content-Type": "application/json" } });
+const ALLOWED_ORIGINS = [
+  'https://gas-portal.netlify.app',
+  'http://localhost:8888',
+  'http://localhost:3000',
+];
+
+function getCORS(req) {
+  const origin = req.headers.get('origin') || '';
+  const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  return {
+    "Access-Control-Allow-Origin": allowed,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Vary": "Origin",
+  };
+}
+const json = (d, s = 200) => new Response(JSON.stringify(d), { status: s, headers: { "Access-Control-Allow-Origin": "https://gas-portal.netlify.app", "Content-Type": "application/json" } });
 const err  = (m, s = 400) => json({ error: m }, s);
 
 // DB via service_role (bypasses RLS)
@@ -60,7 +71,7 @@ async function sha256(msg) {
 
 // ═══════════════════════════════════════════════════════════
 export default async function handler(req) {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: getCORS(req) });
 
   let body;
   try { body = await req.json(); } catch { return err("Invalid JSON"); }
