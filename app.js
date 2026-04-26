@@ -1486,13 +1486,15 @@ function renderTicketRows(tbodyId, tickets, isAdmin) {
 }
 
 function getSLA(t) {
-  if (['resolved','closed'].includes(t.status)) return {pct:100,cls:'sla-ok',label:'منتهي'};
-  const slaH = PRIO_SLA[t.priority]||24;
-  const elapsedH = (Date.now()-new Date(t.created_at))/3600000;
-  const pct = Math.min(elapsedH/slaH*100,100);
-  const rem = Math.max(slaH-elapsedH,0);
-  const label = pct>=100 ? 'متأخر!' : `${Math.round(rem)}س متبقية`;
-  return { pct, cls: pct>=100?'sla-crit':pct>=70?'sla-warn':'sla-ok', label };
+  if (['resolved','closed','archived'].includes(t.status)) return {pct:100, cls:'sla-ok', label:'مكتمل'};
+  // استخدم الـ deadline من الـ database لو موجود، وإلا احسبه
+  const slaH    = PRIO_SLA[t.priority] || 24;
+  const elapsed = (Date.now() - new Date(t.created_at)) / 3600000;
+  const pct     = Math.min(elapsed / slaH * 100, 100);
+  const rem     = Math.max(slaH - elapsed, 0);
+  const label   = pct >= 100 ? '⚠️ متأخر!' : rem < 1 ? 'أقل من ساعة' : `${Math.round(rem)}س متبقية`;
+  const cls     = pct >= 100 ? 'sla-crit' : pct >= 80 ? 'sla-warn' : 'sla-ok';
+  return { pct, cls, label, breached: pct >= 100 };
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1602,6 +1604,28 @@ async function openTicketDetail(id) {
         </div>
         <textarea class="comment-input" id="newCommentInput" placeholder="أضف تعليقاً أو تحديثاً..."></textarea>
         <button class="btn btn-gold" onclick="addComment('${id}')">إرسال</button>
+      </div>` : ''}
+
+      ${['closed','archived'].includes(t.status) && t.created_by === S.user?.id ? `
+      <div class="comment-wrap" style="margin-top:12px;">
+        <div class="dc-title" style="margin-bottom:10px;">⭐ تقييم الخدمة</div>
+        ${t.rating ? `
+          <div style="color:#F59E0B;font-size:22px;letter-spacing:3px;margin-bottom:6px;">${'★'.repeat(t.rating)}${'☆'.repeat(5-t.rating)}</div>
+          <div style="font-size:12px;color:var(--text-muted);">${_e(t.rating_comment||'شكراً على تقييمك')}</div>
+        ` : `
+          <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">كيف تقيّم مستوى الخدمة؟</div>
+          <div id="starRating_${id}" style="display:flex;gap:6px;margin-bottom:12px;direction:ltr;">
+            ${[1,2,3,4,5].map(s => `
+              <span onclick="setRating('${id}',${s})" data-star="${s}"
+                style="font-size:28px;cursor:pointer;color:var(--text-muted);transition:color .15s;line-height:1;"
+                onmouseover="highlightStars('${id}',${s})"
+                onmouseout="highlightStars('${id}',0)">☆</span>
+            `).join('')}
+          </div>
+          <input type="hidden" id="ratingVal_${id}" value="0">
+          <textarea id="ratingComment_${id}" class="comment-input" placeholder="تعليق اختياري..." style="height:60px;margin-bottom:8px;"></textarea>
+          <button class="btn btn-gold" onclick="submitRating('${id}')">إرسال التقييم</button>
+        `}
       </div>` : ''}
     </div>
 
@@ -1787,6 +1811,44 @@ async function saveTicketUpdate() {
 }
 
 // ── Add Comment ──────────────────────────────────────────
+// ── Rating Functions ──────────────────────────────────
+function highlightStars(ticketId, upTo) {
+  const container = document.getElementById(`starRating_${ticketId}`);
+  if (!container) return;
+  const val = upTo || parseInt(document.getElementById(`ratingVal_${ticketId}`)?.value || '0');
+  container.querySelectorAll('[data-star]').forEach(el => {
+    const s = parseInt(el.dataset.star);
+    el.textContent = s <= val ? '★' : '☆';
+    el.style.color = s <= val ? '#F59E0B' : 'var(--text-muted)';
+  });
+}
+
+function setRating(ticketId, val) {
+  const input = document.getElementById(`ratingVal_${ticketId}`);
+  if (!input) return;
+  input.value = val;
+  highlightStars(ticketId, val);
+}
+
+async function submitRating(ticketId) {
+  const val     = parseInt(document.getElementById(`ratingVal_${ticketId}`)?.value || '0');
+  const comment = document.getElementById(`ratingComment_${ticketId}`)?.value.trim() || '';
+  if (!val) return toast('اختر تقييماً من 1 إلى 5 نجوم', 'error');
+  try {
+    await sbFetch(`/tickets?id=eq.${ticketId}`, {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ rating: val, rating_comment: comment, rated_at: new Date().toISOString() })
+    });
+    toast('شكراً على تقييمك! ⭐', 'success');
+    // تحديث البيانات المحلية
+    const t = S.tickets.find(t => t.id === ticketId);
+    if (t) { t.rating = val; t.rating_comment = comment; t.rated_at = new Date().toISOString(); }
+    openTicketDetail(ticketId);
+  } catch { toast('حدث خطأ، حاول مرة أخرى', 'error'); }
+}
+// ─────────────────────────────────────────────────────
+
 async function addComment(ticketId) {
   const text = $('newCommentInput').value.trim();
   if (!text) return;
@@ -2505,192 +2567,333 @@ async function doResetUserPassword() {
 // ═══════════════════════════════════════════════════════
 function renderReports() {
   const isLead  = Perm.isDeptLead() || Perm.isSuper();
-  // تقارير الـ super_admin شاملة، وتقارير الـ dept lead مقيدة بإدارته
   const tickets = Perm.isSuper() ? S.tickets : visibleTickets();
 
-  // ── حساب الشهر الحالي والشهر الماضي ─────────────────
-  const now       = new Date();
+  const now            = new Date();
   const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const lastMonthStart = new Date(now.getFullYear(), now.getMonth()-1, 1);
   const lastMonthEnd   = new Date(now.getFullYear(), now.getMonth(), 0);
+  const thisMonth      = tickets.filter(t => new Date(t.created_at) >= thisMonthStart);
+  const lastMonth      = tickets.filter(t => new Date(t.created_at) >= lastMonthStart && new Date(t.created_at) <= lastMonthEnd);
 
-  const thisMonth = tickets.filter(t=>new Date(t.created_at)>=thisMonthStart);
-  const lastMonth = tickets.filter(t=>new Date(t.created_at)>=lastMonthStart&&new Date(t.created_at)<=lastMonthEnd);
+  const total     = tickets.length;
+  const closedCnt = tickets.filter(t => ['resolved','closed'].includes(t.status)).length;
+  const open      = tickets.filter(t => ['open','assigned'].includes(t.status)).length;
+  const crit      = tickets.filter(t => t.priority === 'critical').length;
+  const resRate   = total ? Math.round(closedCnt / total * 100) : 0;
 
-  const total    = tickets.length;
-  const closedCnt = tickets.filter(t=>['resolved','closed'].includes(t.status)).length;
-  const open     = tickets.filter(t=>['open','assigned'].includes(t.status)).length;
-  const crit     = tickets.filter(t=>t.priority==='critical').length;
-  const resRate  = total?Math.round(closedCnt/total*100):0;
+  // SLA stats
+  const slaBreached   = tickets.filter(t => {
+    if (['closed','archived'].includes(t.status)) return false;
+    const slaH    = PRIO_SLA[t.priority] || 24;
+    const elapsed = (Date.now() - new Date(t.created_at)) / 3600000;
+    return elapsed > slaH;
+  }).length;
+  const slaCompliant = tickets.filter(t => {
+    if (!['closed','archived'].includes(t.status)) return false;
+    const slaH     = PRIO_SLA[t.priority] || 24;
+    const duration = (new Date(t.closed_at || t.updated_at) - new Date(t.created_at)) / 3600000;
+    return duration <= slaH;
+  }).length;
+  const slaRate = closedCnt ? Math.round(slaCompliant / closedCnt * 100) : 0;
 
-  // تغيير الشهر
-  const thisMTotal = thisMonth.length;
-  const lastMTotal = lastMonth.length;
-  const monthDiff  = thisMTotal - lastMTotal;
-  const monthArrow = monthDiff>0?'↑':monthDiff<0?'↓':'—';
-  // ↑ طلبات أكتر من الشهر اللي فات = حِمل أكبر = أحمر (تحذير)
-  // ↓ طلبات أقل = أداء أفضل أو ضغط أقل = أخضر
-  const monthColor = monthDiff>0?'#F87171':monthDiff<0?'#4ADE80':'var(--text-muted)';
+  // Rating stats
+  const rated      = tickets.filter(t => t.rating);
+  const avgRating  = rated.length ? (rated.reduce((s,t) => s + t.rating, 0) / rated.length).toFixed(1) : null;
+  const stars      = r => '★'.repeat(Math.round(r)) + '☆'.repeat(5 - Math.round(r));
+
+  // Avg resolution time
+  const closed = tickets.filter(t => ['closed','archived'].includes(t.status) && t.closed_at);
+  const avgRes = closed.length
+    ? (closed.reduce((s,t) => s + (new Date(t.closed_at) - new Date(t.created_at)) / 3600000, 0) / closed.length)
+    : null;
+  const fmtHours = h => h === null ? '—' : h < 24 ? Math.round(h) + 'س' : (h/24).toFixed(1) + 'ي';
 
   const _resetBtn = $('resetStatsBtn');
   if (_resetBtn) _resetBtn.style.display = Perm.isSuper() ? '' : 'none';
 
-  // ── Stats row ──────────────────────────────────────────
+  // ── Stats Cards ──────────────────────────────────────
   const statsCards = [
-    ['معدل الإغلاق',     total?resRate+'%':'—', 'من إجمالي التيكتات', '#4ADE80'],
-    ['إجمالي التيكتات', total,                 'منذ البداية',         '#60A5FA'],
-    ['قيد الانتظار',    open,                  'تحتاج إجراء',         '#FCD34D'],
-    ['حرجة',            crit,                  'أولوية قصوى',          '#F87171'],
+    ['معدل الإغلاق',     total ? resRate + '%' : '—', 'من إجمالي التيكتات', '#4ADE80'],
+    ['إجمالي التيكتات',  total,                        'منذ البداية',         '#60A5FA'],
+    ['قيد الانتظار',     open,                         'تحتاج إجراء',         '#FCD34D'],
+    ['تجاوزت الـ SLA',   slaBreached,                  'تحتاج تدخل عاجل',    slaBreached > 0 ? '#EF4444' : '#4ADE80'],
   ].map(([l,v,h,c]) =>
-    '<div class="stat-card" style="--_acc:' + c + '">' +
-    '<div class="stat-label">' + l + '</div>' +
-    '<div class="stat-val" style="color:' + c + '">' + v + '</div>' +
-    '<div class="stat-hint">' + h + '</div></div>'
+    `<div class="stat-card" style="--_acc:${c}">` +
+    `<div class="stat-label">${l}</div>` +
+    `<div class="stat-val" style="color:${c}">${v}</div>` +
+    `<div class="stat-hint">${h}</div></div>`
   ).join('');
-  const statsHtml = '<div class="stats-row" style="margin-bottom:16px;">' + statsCards + '</div>';
+  const statsHtml = `<div class="stats-row" style="margin-bottom:16px;">${statsCards}</div>`;
 
-  // مقارنة الأشهر — للقيادات
+  // ── SLA + Rating summary cards ───────────────────────
+  const slaRatingRow = isLead ? `
+    <div class="stats-row" style="margin-bottom:20px;">
+      <div class="stat-card" style="--_acc:#8B5CF6">
+        <div class="stat-label">التزام SLA</div>
+        <div class="stat-val" style="color:#8B5CF6">${slaRate}%</div>
+        <div class="stat-hint">من التيكتات المغلقة في الوقت</div>
+      </div>
+      <div class="stat-card" style="--_acc:#F59E0B">
+        <div class="stat-label">متوسط وقت الإغلاق</div>
+        <div class="stat-val" style="color:#F59E0B">${fmtHours(avgRes)}</div>
+        <div class="stat-hint">لكل التيكتات المغلقة</div>
+      </div>
+      <div class="stat-card" style="--_acc:#EC4899">
+        <div class="stat-label">متوسط التقييم</div>
+        <div class="stat-val" style="color:#EC4899">${avgRating ? avgRating + ' ★' : '—'}</div>
+        <div class="stat-hint">${rated.length} تقييم من أصل ${closedCnt} مغلق</div>
+      </div>
+      <div class="stat-card" style="--_acc:#14B8A6">
+        <div class="stat-label">طلبات هذا الشهر</div>
+        <div class="stat-val" style="color:#14B8A6">${thisMonth.length}</div>
+        <div class="stat-hint">مقارنة بـ ${lastMonth.length} الشهر الماضي</div>
+      </div>
+    </div>` : '';
+
+  // ── مقارنة الأشهر ─────────────────────────────────────
   let monthHtml = '';
   if (isLead) {
     const mRows = [
-      ['إجمالي التيكتات', thisMTotal, lastMTotal],
-      ['مغلقة', thisMonth.filter(t=>['resolved','closed'].includes(t.status)).length, lastMonth.filter(t=>['resolved','closed'].includes(t.status)).length],
-      ['حرجة',   thisMonth.filter(t=>t.priority==='critical').length, lastMonth.filter(t=>t.priority==='critical').length],
-      ['مفتوحة', thisMonth.filter(t=>t.status==='open').length, lastMonth.filter(t=>t.status==='open').length],
-    ].map(([label,curr,prev]) => {
+      ['إجمالي التيكتات', thisMonth.length, lastMonth.length, false],
+      ['مغلقة',           thisMonth.filter(t => ['resolved','closed'].includes(t.status)).length, lastMonth.filter(t => ['resolved','closed'].includes(t.status)).length, true],
+      ['حرجة',            thisMonth.filter(t => t.priority === 'critical').length, lastMonth.filter(t => t.priority === 'critical').length, false],
+      ['مفتوحة',          thisMonth.filter(t => t.status === 'open').length, lastMonth.filter(t => t.status === 'open').length, false],
+    ].map(([label, curr, prev, isPositive]) => {
       const diff  = curr - prev;
-      // المغلقة: أكتر = أحسن = أخضر ↑
-      // الحرجة/المفتوحة: أكتر = أسوأ = أحمر ↑
-      const isPositiveMetric = label === 'مغلقة';
-      const color = diff === 0
-        ? 'var(--text-muted)'
-        : (diff > 0 === isPositiveMetric) ? '#4ADE80' : '#F87171';
+      const color = diff === 0 ? 'var(--text-muted)' : (diff > 0 === isPositive) ? '#4ADE80' : '#F87171';
       const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '—';
-      return '<tr><td style="font-weight:500;">' + label + '</td>' +
-        '<td style="font-family:var(--font-mono);font-weight:600;">' + curr + '</td>' +
-        '<td style="font-family:var(--font-mono);color:var(--text-muted);">' + prev + '</td>' +
-        '<td style="font-family:var(--font-mono);color:' + color + ';font-weight:600;">' + arrow + ' ' + Math.abs(diff) + '</td></tr>';
+      return `<tr><td style="font-weight:500;">${label}</td>` +
+        `<td style="font-family:var(--font-mono);font-weight:600;">${curr}</td>` +
+        `<td style="font-family:var(--font-mono);color:var(--text-muted);">${prev}</td>` +
+        `<td style="font-family:var(--font-mono);color:${color};font-weight:600;">${arrow} ${Math.abs(diff)}</td></tr>`;
     }).join('');
-    monthHtml = '<div class="tbl-wrap" style="margin-bottom:20px;">' +
-      '<div class="tbl-head">' +
-        '<span class="tbl-head-title">مقارنة الأشهر</span>' +
-        '<span style="font-size:12px;color:var(--text-muted);">' + now.toLocaleDateString('ar-EG',{month:'long',year:'numeric'}) + '</span>' +
-      '</div>' +
-      '<table class="data-tbl"><thead><tr><th></th><th>الشهر الحالي</th><th>الشهر الماضي</th><th>الفرق</th></tr></thead>' +
-      '<tbody>' + mRows + '</tbody></table></div>';
+    monthHtml = `<div class="tbl-wrap" style="margin-bottom:20px;">
+      <div class="tbl-head">
+        <span class="tbl-head-title">مقارنة الأشهر</span>
+        <span style="font-size:12px;color:var(--text-muted);">${now.toLocaleDateString('ar-EG',{month:'long',year:'numeric'})}</span>
+      </div>
+      <table class="data-tbl"><thead><tr><th></th><th>الشهر الحالي</th><th>الشهر الماضي</th><th>الفرق</th></tr></thead>
+      <tbody>${mRows}</tbody></table></div>`;
   }
 
-  // ── View للمشرف (supervisor/admin) — يشوف أدائه الشخصي ─
+  // ── SLA Breached Tickets ──────────────────────────────
+  const breachedTickets = tickets.filter(t => {
+    if (['closed','archived'].includes(t.status)) return false;
+    const slaH    = PRIO_SLA[t.priority] || 24;
+    const elapsed = (Date.now() - new Date(t.created_at)) / 3600000;
+    return elapsed > slaH;
+  });
+  const slaBreachedHtml = isLead && breachedTickets.length ? `
+    <div class="tbl-wrap" style="margin-bottom:20px;border:1px solid #EF444433;">
+      <div class="tbl-head" style="background:#EF444415;">
+        <span class="tbl-head-title" style="color:#EF4444;">⚠️ تيكتات تجاوزت الـ SLA (${breachedTickets.length})</span>
+      </div>
+      <table class="data-tbl">
+        <thead><tr><th>رقم التيكت</th><th>العنوان</th><th>الإدارة</th><th>الأولوية</th><th>تأخير</th></tr></thead>
+        <tbody>${breachedTickets.sort((a,b) => new Date(a.created_at) - new Date(b.created_at)).map(t => {
+          const slaH    = PRIO_SLA[t.priority] || 24;
+          const elapsed = (Date.now() - new Date(t.created_at)) / 3600000;
+          const overBy  = elapsed - slaH;
+          return `<tr style="cursor:pointer;" onclick="openTicketDetail('${t.id}')">
+            <td><span class="tnum" style="color:#EF4444;">${_e(t.ticket_number)}</span></td>
+            <td>${_e(t.title)}</td>
+            <td><span class="dept-chip">${_e(t.target_department||'—')}</span></td>
+            <td>${pbadge(t.priority)}</td>
+            <td style="color:#EF4444;font-weight:600;">+${fmtHours(overBy)}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>` : '';
+
+  // ── SLA by priority ───────────────────────────────────
+  const slaByPriorityHtml = isLead ? (() => {
+    const prios = ['critical','high','medium','low'];
+    const PRIO_COLORS = { critical:'#EF4444', high:'#F97316', medium:'#EAB308', low:'#22C55E' };
+    const PRIO_LABELS = { critical:'حرجة', high:'عالية', medium:'متوسطة', low:'منخفضة' };
+    const rows = prios.map(p => {
+      const pTickets  = tickets.filter(t => t.priority === p);
+      const pClosed   = pTickets.filter(t => ['closed','archived'].includes(t.status));
+      const pOnTime   = pClosed.filter(t => {
+        const slaH = PRIO_SLA[p];
+        const dur  = (new Date(t.closed_at || t.updated_at) - new Date(t.created_at)) / 3600000;
+        return dur <= slaH;
+      });
+      const pBreached = pTickets.filter(t => {
+        if (['closed','archived'].includes(t.status)) return false;
+        const elapsed = (Date.now() - new Date(t.created_at)) / 3600000;
+        return elapsed > PRIO_SLA[p];
+      });
+      const rate = pClosed.length ? Math.round(pOnTime.length / pClosed.length * 100) : null;
+      const avgDur = pClosed.length
+        ? (pClosed.reduce((s,t) => s + (new Date(t.closed_at||t.updated_at) - new Date(t.created_at))/3600000, 0) / pClosed.length)
+        : null;
+      return `<tr>
+        <td><span style="color:${PRIO_COLORS[p]};font-weight:600;">${PRIO_LABELS[p]}</span><span style="font-size:10px;color:var(--text-muted);margin-inline-start:4px;">(${PRIO_SLA[p]}س)</span></td>
+        <td style="font-family:var(--font-mono);">${pTickets.length}</td>
+        <td style="font-family:var(--font-mono);">${pClosed.length}</td>
+        <td style="color:${pBreached.length > 0 ? '#EF4444' : 'var(--text-muted)'};font-weight:600;">${pBreached.length}</td>
+        <td style="font-family:var(--font-mono);">${fmtHours(avgDur)}</td>
+        <td style="min-width:120px;">
+          ${rate !== null
+            ? `<div class="sla-bar" style="height:6px;margin-bottom:2px;"><div class="sla-fill ${rate>=80?'sla-ok':rate>=50?'sla-warn':'sla-crit'}" style="width:${rate}%;"></div></div>
+               <span style="font-size:10px;color:var(--text-muted);">${rate}% في الوقت</span>`
+            : '<span style="color:var(--text-muted);font-size:11px;">—</span>'}
+        </td>
+      </tr>`;
+    }).join('');
+    return `<div class="tbl-wrap" style="margin-bottom:20px;">
+      <div class="tbl-head"><span class="tbl-head-title">أداء SLA حسب الأولوية</span></div>
+      <table class="data-tbl">
+        <thead><tr><th>الأولوية</th><th>الإجمالي</th><th>مغلقة</th><th>متأخرة</th><th>متوسط الإغلاق</th><th>الالتزام</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  })() : '';
+
+  // ── Ratings Table ─────────────────────────────────────
+  const ratingsHtml = isLead && rated.length ? `
+    <div class="tbl-wrap" style="margin-bottom:20px;">
+      <div class="tbl-head">
+        <span class="tbl-head-title">تقييمات الموظفين</span>
+        <span style="font-size:12px;color:var(--text-muted);">${rated.length} تقييم</span>
+      </div>
+      <table class="data-tbl">
+        <thead><tr><th>التيكت</th><th>العنوان</th><th>التقييم</th><th>التعليق</th><th>تاريخ التقييم</th></tr></thead>
+        <tbody>${rated.sort((a,b) => new Date(b.rated_at||b.updated_at) - new Date(a.rated_at||a.updated_at)).slice(0,10).map(t => `<tr>
+          <td><span class="tnum">${_e(t.ticket_number)}</span></td>
+          <td>${_e(t.title)}</td>
+          <td style="color:#F59E0B;letter-spacing:1px;">${stars(t.rating)}</td>
+          <td style="color:var(--text-muted);font-size:12px;">${_e(t.rating_comment||'—')}</td>
+          <td style="font-size:11px;color:var(--text-muted);">${t.rated_at ? _d(t.rated_at) : '—'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>` : '';
+
+  // ── Supervisor view ───────────────────────────────────
   if (Perm.isSupervisor() && !Perm.isManager() && !Perm.isSuper()) {
-    const myAssigned = tickets.filter(t=>t.assigned_to===S.user.id).length;
-    const myDone     = tickets.filter(t=>t.assigned_to===S.user.id&&['resolved','closed'].includes(t.status)).length;
-    const myOpen     = tickets.filter(t=>t.assigned_to===S.user.id&&['open','assigned','in_progress'].includes(t.status)).length;
-    const myRate     = myAssigned?Math.round(myDone/myAssigned*100):0;
+    const myAssigned = tickets.filter(t => t.assigned_to === S.user.id).length;
+    const myDone     = tickets.filter(t => t.assigned_to === S.user.id && ['resolved','closed'].includes(t.status)).length;
+    const myOpen     = tickets.filter(t => t.assigned_to === S.user.id && ['open','assigned','in_progress'].includes(t.status)).length;
+    const myRate     = myAssigned ? Math.round(myDone / myAssigned * 100) : 0;
+    const mySLAOk    = tickets.filter(t => {
+      if (t.assigned_to !== S.user.id) return false;
+      if (!['closed','archived'].includes(t.status)) return false;
+      const slaH = PRIO_SLA[t.priority] || 24;
+      const dur  = (new Date(t.closed_at||t.updated_at) - new Date(t.created_at)) / 3600000;
+      return dur <= slaH;
+    }).length;
+    const mySLARate = myDone ? Math.round(mySLAOk / myDone * 100) : 0;
 
     $('reportsContent').innerHTML = statsHtml + `
-      <div class="tbl-wrap" style="margin-bottom:20px;">
-        <div class="tbl-head"><span class="tbl-head-title">أدائي الشخصي</span></div>
-        <table class="data-tbl">
-          <thead><tr><th>معين لي</th><th>مغلقة</th><th>قيد التنفيذ</th><th>معدل الإغلاق</th><th>الأداء</th></tr></thead>
-          <tbody><tr>
-            <td><strong>${myAssigned}</strong></td>
-            <td style="color:#4ADE80;">${myDone}</td>
-            <td style="color:#FCD34D;">${myOpen}</td>
-            <td style="font-family:var(--font-mono);">${myRate}%</td>
-            <td style="min-width:160px;">
-              <div class="sla-bar" style="height:8px;">
-                <div class="sla-fill ${myRate>=80?'sla-ok':myRate>=50?'sla-warn':'sla-crit'}" style="width:${myRate}%"></div>
-              </div>
-              <div style="font-size:10px;color:var(--text-muted);margin-top:3px;">${myRate>=80?'ممتاز 🌟':myRate>=50?'جيد':'يحتاج تحسين'}</div>
-            </td>
-          </tr></tbody>
-        </table>
+      <div class="stats-row" style="margin-bottom:20px;">
+        <div class="stat-card" style="--_acc:#60A5FA"><div class="stat-label">معين لي</div><div class="stat-val" style="color:#60A5FA">${myAssigned}</div></div>
+        <div class="stat-card" style="--_acc:#4ADE80"><div class="stat-label">مغلقة</div><div class="stat-val" style="color:#4ADE80">${myDone}</div></div>
+        <div class="stat-card" style="--_acc:#FCD34D"><div class="stat-label">قيد التنفيذ</div><div class="stat-val" style="color:#FCD34D">${myOpen}</div></div>
+        <div class="stat-card" style="--_acc:#8B5CF6"><div class="stat-label">التزام SLA</div><div class="stat-val" style="color:#8B5CF6">${mySLARate}%</div></div>
       </div>
       <div class="tbl-wrap">
-        <div class="tbl-head"><span class="tbl-head-title">توزيع تيكتاتي حسب نوع الطلب</span></div>
+        <div class="tbl-head"><span class="tbl-head-title">توزيع طلباتي</span></div>
         <table class="data-tbl">
           <thead><tr><th>نوع الطلب</th><th>إجمالي</th><th>مفتوح</th><th>مغلق</th></tr></thead>
           <tbody>${(() => {
-            const mine = tickets.filter(t => t.assigned_to === S.user.id);
+            const mine   = tickets.filter(t => t.assigned_to === S.user.id);
             const groups = {};
             mine.forEach(t => {
-              const k = t.request_type || t.target_department || CAT_L[t.category] || t.category || 'غير محدد';
+              const k = t.request_type || t.target_department || 'غير محدد';
               (groups[k] = groups[k] || []).push(t);
             });
-            const rows = Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);
-            if (!rows.length) return '<tr><td colspan="4"><div class="empty-state"><p>لا توجد تيكتات معينة لك</p></div></td></tr>';
+            const rows = Object.entries(groups).sort((a,b) => b[1].length - a[1].length);
+            if (!rows.length) return '<tr><td colspan="4"><div class="empty-state"><p>لا توجد تيكتات</p></div></td></tr>';
             return rows.map(([k,arr]) => `<tr>
               <td>${_e(k)}</td><td>${arr.length}</td>
-              <td>${arr.filter(t=>['open','assigned','in_progress'].includes(t.status)).length}</td>
-              <td>${arr.filter(t=>['resolved','closed'].includes(t.status)).length}</td>
+              <td>${arr.filter(t => ['open','assigned','in_progress'].includes(t.status)).length}</td>
+              <td>${arr.filter(t => ['resolved','closed'].includes(t.status)).length}</td>
             </tr>`).join('');
-          })()}
-          </tbody>
+          })()}</tbody>
         </table>
       </div>`;
     return;
   }
 
-  // ── Manager / Super Admin view: أداء فريق الإدارة (أو كل النظام) ─
-  // للمدير: بس موظفي إدارته. للـ super_admin: كل الموظفين اللي معلقين طلبات
+  // ── Manager / Super Admin view ────────────────────────
   const teamUsers = Perm.isSuper()
     ? S.users.filter(u => u.is_active !== false)
     : S.users.filter(u => u.department === Perm.myDept() && u.is_active !== false);
-  const perf = teamUsers.map(u=>{
-    const asgn = tickets.filter(t=>t.assigned_to===u.id).length;
-    const done = tickets.filter(t=>t.assigned_to===u.id&&['resolved','closed'].includes(t.status)).length;
-    return { name:u.name, role:u.role, asgn, done, rate: asgn?Math.round(done/asgn*100):0 };
-  }).filter(p => p.asgn > 0)  // نعرض بس اللي عليه تيكتات
-    .sort((a,b) => b.asgn - a.asgn);
+  const perf = teamUsers.map(u => {
+    const asgn    = tickets.filter(t => t.assigned_to === u.id).length;
+    const done    = tickets.filter(t => t.assigned_to === u.id && ['resolved','closed'].includes(t.status)).length;
+    const slaOk   = tickets.filter(t => {
+      if (t.assigned_to !== u.id) return false;
+      if (!['closed','archived'].includes(t.status)) return false;
+      const slaH = PRIO_SLA[t.priority] || 24;
+      const dur  = (new Date(t.closed_at||t.updated_at) - new Date(t.created_at)) / 3600000;
+      return dur <= slaH;
+    }).length;
+    const avgDur  = (() => {
+      const closedByUser = tickets.filter(t => t.assigned_to === u.id && ['closed','archived'].includes(t.status) && t.closed_at);
+      if (!closedByUser.length) return null;
+      return closedByUser.reduce((s,t) => s + (new Date(t.closed_at) - new Date(t.created_at))/3600000, 0) / closedByUser.length;
+    })();
+    return { name: u.name, role: u.role, asgn, done, slaOk, avgDur, rate: asgn ? Math.round(done/asgn*100) : 0, slaRate: done ? Math.round(slaOk/done*100) : 0 };
+  }).filter(p => p.asgn > 0).sort((a,b) => b.asgn - a.asgn);
 
-  $('reportsContent').innerHTML = statsHtml + monthHtml + `
-    <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-      <button class="btn btn-ghost" onclick="exportExcel()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+  const deptDistHtml = (() => {
+    const groups = {};
+    tickets.forEach(t => {
+      const k = t.target_department || 'غير محدد';
+      (groups[k] = groups[k] || []).push(t);
+    });
+    const rows = Object.entries(groups).sort((a,b) => b[1].length - a[1].length);
+    if (!rows.length) return '<tr><td colspan="5"><div class="empty-state"><p>لا توجد تيكتات</p></div></td></tr>';
+    return rows.map(([k,arr]) => `<tr>
+      <td><strong>${_e(k)}</strong></td>
+      <td>${arr.length}</td>
+      <td>${arr.filter(t => ['open','assigned'].includes(t.status)).length}</td>
+      <td>${arr.filter(t => t.status === 'in_progress').length}</td>
+      <td>${arr.filter(t => ['resolved','closed'].includes(t.status)).length}</td>
+    </tr>`).join('');
+  })();
+
+  $('reportsContent').innerHTML = statsHtml + slaRatingRow + `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:12px;gap:8px;">
+      <button class="btn btn-ghost" onclick="exportExcel()" style="font-size:12px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         تصدير Excel
       </button>
     </div>
+  ` + monthHtml + slaBreachedHtml + slaByPriorityHtml + `
     <div class="tbl-wrap" style="margin-bottom:20px;">
-      <div class="tbl-head"><span class="tbl-head-title">${Perm.isSuper()?'أداء فريق العمل':`أداء فريق ${Perm.myDept()||'الإدارة'}`}</span></div>
+      <div class="tbl-head"><span class="tbl-head-title">${Perm.isSuper() ? 'أداء فريق العمل' : `أداء فريق ${Perm.myDept()||'الإدارة'}`}</span></div>
       <table class="data-tbl">
-        <thead><tr><th>الموظف</th><th>الدور</th><th>معين له</th><th>مغلقة</th><th>معدل الإغلاق</th><th>الأداء</th></tr></thead>
-        <tbody>${perf.length?perf.map(p=>`<tr>
+        <thead><tr><th>الموظف</th><th>الدور</th><th>معين له</th><th>مغلقة</th><th>متوسط الإغلاق</th><th>التزام SLA</th><th>معدل الأداء</th></tr></thead>
+        <tbody>${perf.length ? perf.map(p => `<tr>
           <td><strong>${_e(p.name)}</strong></td>
           <td style="font-size:11px;color:var(--text-muted);">${_e(ROLES[p.role]||p.role)}</td>
-          <td>${p.asgn}</td><td>${p.done}</td>
-          <td style="font-family:var(--font-mono);">${p.rate}%</td>
-          <td style="min-width:140px;">
-            <div class="sla-bar" style="height:7px;">
-              <div class="sla-fill ${p.rate>=80?'sla-ok':p.rate>=50?'sla-warn':'sla-crit'}" style="width:${p.rate}%"></div>
+          <td>${p.asgn}</td>
+          <td>${p.done}</td>
+          <td style="font-family:var(--font-mono);font-size:12px;">${fmtHours(p.avgDur)}</td>
+          <td style="font-family:var(--font-mono);">${p.slaRate}%</td>
+          <td style="min-width:130px;">
+            <div class="sla-bar" style="height:7px;margin-bottom:3px;">
+              <div class="sla-fill ${p.rate>=80?'sla-ok':p.rate>=50?'sla-warn':'sla-crit'}" style="width:${p.rate}%;"></div>
             </div>
+            <span style="font-size:10px;color:var(--text-muted);">${p.rate}%</span>
           </td>
-        </tr>`).join(''):'<tr><td colspan="6"><div class="empty-state"><p>لا توجد بيانات أداء</p></div></td></tr>'}
+        </tr>`).join('') : '<tr><td colspan="7"><div class="empty-state"><p>لا توجد بيانات</p></div></td></tr>'}
         </tbody>
       </table>
     </div>
-    <div class="tbl-wrap">
+    <div class="tbl-wrap" style="margin-bottom:20px;">
       <div class="tbl-head"><span class="tbl-head-title">التوزيع حسب الإدارة</span></div>
       <table class="data-tbl">
         <thead><tr><th>الإدارة</th><th>إجمالي</th><th>مفتوح</th><th>قيد التنفيذ</th><th>مغلق</th></tr></thead>
-        <tbody>${(() => {
-          const groups = {};
-          tickets.forEach(t => {
-            const k = t.target_department || CAT_L[t.category] || t.category || 'غير محدد';
-            (groups[k] = groups[k] || []).push(t);
-          });
-          const rows = Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);
-          if (!rows.length) return '<tr><td colspan="5"><div class="empty-state"><p>لا توجد تيكتات</p></div></td></tr>';
-          return rows.map(([k,arr])=>`<tr>
-            <td><strong>${_e(k)}</strong></td>
-            <td>${arr.length}</td>
-            <td>${arr.filter(t=>['open','assigned'].includes(t.status)).length}</td>
-            <td>${arr.filter(t=>t.status==='in_progress').length}</td>
-            <td>${arr.filter(t=>['resolved','closed'].includes(t.status)).length}</td>
-          </tr>`).join('');
-        })()}</tbody>
+        <tbody>${deptDistHtml}</tbody>
       </table>
-    </div>`;
+    </div>
+  ` + ratingsHtml;
 }
+
 async function confirmResetStats() {
   showConfirm('🔄', 'إعادة ضبط الإحصاءات', 'سيؤدي هذا إلى أرشفة جميع التيكتات المغلقة.\nهل أنت متأكد؟', async ()=>{
     try {
