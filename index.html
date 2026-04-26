@@ -1490,6 +1490,7 @@ body {
       <button class="modal-x" onclick="closeModal('newUserModal')">×</button>
     </div>
     <div class="modal-bd">
+      <form onsubmit="event.preventDefault(); saveUser();" autocomplete="off">
       <div class="fg-2">
         <div class="fg"><label class="fl">الاسم الكامل *</label><input class="fi" id="nu_name" placeholder="الاسم الكامل"></div>
         <div class="fg"><label class="fl">اسم المستخدم *</label><input class="fi" id="nu_uname" placeholder="username"></div>
@@ -1518,9 +1519,10 @@ body {
       </div>
     </div>
     <div class="modal-ft">
-      <button class="btn btn-gold" onclick="saveUser()">حفظ</button>
-      <button class="btn btn-ghost" onclick="closeModal('newUserModal')">إلغاء</button>
+      <button class="btn btn-gold" type="button" onclick="saveUser()">حفظ</button>
+      <button class="btn btn-ghost" type="button" onclick="closeModal('newUserModal')">إلغاء</button>
     </div>
+    </form>
   </div>
 </div>
 
