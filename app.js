@@ -2464,7 +2464,13 @@ async function saveUser() {
       // نوضح ده للمستخدم بدل ما نقوله "فشل" وبس
       const msg = e.message || '';
       if (msg.includes('duplicate') || msg.includes('already exists') || msg.includes('unique')) {
-        toast('البريد الإلكتروني أو اسم المستخدم موجود بالفعل','error');
+        toast('البريد الإلكتروني أو اسم المستخدم موجود بالفعل', 'error');
+      } else if (msg.includes('email_exists') || msg.includes('email address has already been registered')) {
+        toast('⚠️ هذا البريد الإلكتروني مسجل مسبقاً — اختر بريداً آخر', 'error');
+      } else if (msg.includes('weak_password') || msg.includes('too short')) {
+        toast('⚠️ كلمة المرور ضعيفة — يجب أن تكون 6 أحرف على الأقل', 'error');
+      } else if (msg.includes('invalid_email') || msg.includes('invalid email')) {
+        toast('⚠️ البريد الإلكتروني غير صحيح', 'error');
       } else {
         toast('فشل الإضافة: ' + msg, 'error');
       }
