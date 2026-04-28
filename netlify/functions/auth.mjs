@@ -206,9 +206,11 @@ export default async (request) => {
     return err("Method not allowed", 405, origin);
   }
 
-  // Hard config check — fail loud, never silently
-  if (!SUPABASE_URL || !SERVICE_ROLE || !SUPABASE_ANON) {
-    return err("Server misconfigured (missing env vars)", 500, origin);
+  // Hard config check — only the two truly required vars.
+  // SUPABASE_ANON is optional: if missing, server-side login actions
+  // fall back to client-side Supabase auth (the original behaviour).
+  if (!SUPABASE_URL || !SERVICE_ROLE) {
+    return err("Server misconfigured (missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY)", 500, origin);
   }
 
   // Parse body
@@ -434,7 +436,11 @@ export default async (request) => {
       if (pErr) return err(pErr, 400, origin);
       if (old_password === new_password) return err("كلمة المرور الجديدة لازم تكون مختلفة", 400, origin);
 
-      // Re-authenticate with the OLD password before allowing rotation
+      // Re-authenticate with the OLD password before allowing rotation.
+      // Requires SUPABASE_ANON. If missing, return clear setup error.
+      if (!SUPABASE_ANON) {
+        return err("مطلوب ضبط SUPABASE_ANON_KEY في إعدادات Netlify لتفعيل تغيير كلمة المرور بأمان", 503, origin);
+      }
       const reauth = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
         method: "POST",
         headers: { apikey: SUPABASE_ANON, "Content-Type": "application/json" },
