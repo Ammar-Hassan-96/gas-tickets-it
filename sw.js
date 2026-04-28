@@ -2,7 +2,7 @@
 // GAS Internal Tickets — Service Worker v1.1
 // ═══════════════════════════════════════════════════════
 
-const CACHE_NAME   = 'gas-portal-v1.1';
+const CACHE_NAME   = 'gas-portal-v1.2';
 const OFFLINE_URL  = '/offline.html';
 
 // الملفات اللي هتتحفظ في الـ cache
