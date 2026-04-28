@@ -484,11 +484,11 @@ function applyTheme(theme, save=true) {
   document.documentElement.setAttribute('data-theme', theme);
   if (save) {
     localStorage.setItem(CFG.themeKey, theme);
-    // Persist to server if logged in
-    if (S.user) {
+    // Persist to server if logged in — v4.0: token-authenticated
+    if (S.user && S.token) {
       fetch(CFG.authEndpoint, {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ action:'save_theme', user_id:S.user.id, theme })
+        body: JSON.stringify({ action:'save_theme', token:S.token, theme })
       }).catch(()=>{});
     }
   }
@@ -581,28 +581,22 @@ async function doLogin() {
   $('loginErr').style.display = 'none';
 
   try {
-    // v3.3: الـ username→email lookup يتم على السيرفر فقط
-    // الـ client ما بيشوفش الـ email ولا يعرف لو المستخدم موجود أصلاً
-    let email = usernameOrEmail;
-    if (!usernameOrEmail.includes('@')) {
-      // نبعت الـ username للـ Netlify Function تجيب الـ email بـ service_role
-      // بكده الـ anon key ما يقدرش يعمل enumerate للـ users
-      const res = await fetch(CFG.authEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'resolve_username', username: usernameOrEmail })
-      });
-      const data = await res.json();
-      // مهم: نفس الـ error للـ username غير الموجود وكلمة السر الغلط
-      // عشان ما نكشفش معلومات عن وجود المستخدم
-      if (!res.ok || !data.email) {
-        throw new Error('اسم المستخدم أو كلمة المرور غير صحيحة');
-      }
-      email = data.email;
+    // v4.0: السيرفر بيعمل username→email + login في request واحدة
+    // الـ client ما بيشوفش الـ email خالص → no user enumeration
+    const loginRes = await fetch(CFG.authEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'login_with_username',
+        username: usernameOrEmail,
+        password
+      })
+    });
+    const session = await loginRes.json();
+    if (!loginRes.ok || !session.access_token) {
+      // نفس رسالة الخطأ سواء اسم غلط أو كلمة سر غلط
+      throw new Error(session.error || 'اسم المستخدم أو كلمة المرور غير صحيحة');
     }
-
-    // تسجيل الدخول عبر Supabase Auth
-    const session = await _supa.signIn(email, password);
 
     // حفظ الـ session
     localStorage.setItem(CFG.sessionKey, JSON.stringify(session));
@@ -715,18 +709,27 @@ async function bootApp() {
   refreshNavCounts();
   showPage('dashboard');
 
-  // Heartbeat — Supabase JWT auto-refresh بيتعمل تلقائياً في sbFetch
-  // مش محتاجين ping للـ Netlify بعد كده
-  // بس نعمل check على الـ session كل 5 دقائق عشان نـ refresh لو قرب ينتهي
+  // Heartbeat — كل 3 دقايق نعمل حاجتين:
+  //  1. نـ refresh الـ JWT لو قرب ينتهي
+  //  2. نبعت heartbeat للسيرفر عشان نـ update last_seen
+  //     ده بيخلّي لوحة "الجلسات النشطة" تعرض المستخدمين المتصلين فعلاً
   if (S._heartbeat) clearInterval(S._heartbeat);
-  S._heartbeat = setInterval(async () => {
+  const sendHeartbeat = async () => {
     const session = _supa.getSession();
     if (!session) return;
-    // لو الـ token هينتهي خلال 5 دقائق — refresh
+    // 1. JWT refresh لو قرب ينتهي (خلال 5 دقايق)
     if (session.expires_at && Date.now() / 1000 > session.expires_at - 300) {
       await _supa.refreshSession(session.refresh_token);
     }
-  }, 3 * 60 * 1000);
+    // 2. ping السيرفر — silent، مفيش error handling لازم
+    fetch(CFG.authEndpoint, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'heartbeat', token:S.token })
+    }).catch(()=>{});
+  };
+  // أول heartbeat فوراً عشان المستخدم يبان online من أول ثانية
+  sendHeartbeat();
+  S._heartbeat = setInterval(sendHeartbeat, 3 * 60 * 1000);
 
   // SLA Check — كل 30 دقيقة تبعت تنبيه للـ admin لو تيكت اقترب من الانتهاء
   if (S._slaCheck) clearInterval(S._slaCheck);
