@@ -3122,7 +3122,7 @@ function renderProfile() {
           <input type="password" class="fi" id="cp_old" placeholder="••••••••">
         </div>
         <div>
-          <label class="fl">الجديدة (6 أحرف كحد أدنى)</label>
+          <label class="fl">الجديدة (10 أحرف كحد أدنى + حروف)</label>
           <input type="password" class="fi" id="cp_new" placeholder="••••••••">
         </div>
       </div>
