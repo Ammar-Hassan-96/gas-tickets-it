@@ -1,8 +1,27 @@
 # 🔒 تقرير الإصلاحات الأمنية — GAS Internal Tickets
 
 **التاريخ:** 28 أبريل 2026
-**النسخة:** v4.3 (Hardened + Login Restored + Active Sessions Fix)
-**الحالة:** فحص وإصلاح كامل لـ `auth.mjs` + إصلاح "الجلسات النشطة" + استعادة تدفّق الـ login الأصلي
+**النسخة:** v4.4 (Hardened + Robust Auth + No-env-var Fallback)
+**الحالة:** كل المشاكل المعروفة مُصلّحة + لا يحتاج `SUPABASE_ANON_KEY` كـ env var
+
+---
+
+## ✅ v4.4 — إصلاح "Unauthorized" على كل الـ admin actions
+
+**المشكلة:** السوبر أدمن مكنش يقدر يحذف موظفين / يـ reset كلمة سر / أي action محتاج token. كان بيرجع `Unauthorized`.
+
+**السبب الجذري:** الدالة `verifyToken` (وكذلك `login_with_username` و `change_password`) كانت بتبعت header اسمه `apikey: SUPABASE_ANON`. لو الـ env var ده مش متظبّط على Netlify (الكثير من المشاريع بيستخدموا الـ publishable key في الكلاينت بس)، الـ apikey بيتبعت `undefined`، وSupabase يرفض الـ request → كل authenticated action بيرجع `Unauthorized`.
+
+> ملاحظة: نفس البَجّ ده كان موجود في الكود الأصلي قبل أي تعديل مني — مش شغال إلا لو الـ env var متظبّط.
+
+**الإصلاح:**
+- ✅ كل النداءات على `/auth/v1/*` بقت تستخدم `SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY` كـ apikey
+- ✅ لما الـ JWT في `Authorization: Bearer ...` هو الفعّال، الـ apikey مجرّد identifier للمشروع — يقبل الاتنين
+- ✅ النتيجة: كل الـ actions تشتغل حتى لو الـ ANON key مش متظبّط، طول ما `SUPABASE_SERVICE_ROLE_KEY` موجود
+
+---
+
+## 🚨 v4.3 — استعادة تدفّق الـ Login الأصلي
 
 ---
 
