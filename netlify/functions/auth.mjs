@@ -399,7 +399,7 @@ export default async (request) => {
         return err("Forbidden", 403, origin);
       }
 
-      const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
       const enc    = encodeURIComponent(cutoff);
 
       // Department filter for non-super admins
@@ -407,30 +407,80 @@ export default async (request) => {
         ? `&department=eq.${encodeURIComponent(r.me.department)}`
         : "";
 
-      // Try last_seen first; fall back to last_login if the column
-      // doesn't exist in the schema.
-      let users = [];
-      try {
-        const rows = await db(
-          `/users?last_seen=gte.${enc}&is_active=eq.true${deptFilter}` +
-          `&select=id,name,role,department,last_seen&order=last_seen.desc&limit=200`
-        );
-        if (Array.isArray(rows)) users = rows;
-      } catch {
+      // Try multiple shapes — schema varies. We don't filter on
+      // is_active in the query (column may not exist); we filter
+      // client-side after fetching.
+      const tryQuery = async (col) => {
         try {
           const rows = await db(
-            `/users?last_login=gte.${enc}&is_active=eq.true${deptFilter}` +
-            `&select=id,name,role,department,last_login&order=last_login.desc&limit=200`
+            `/users?${col}=gte.${enc}${deptFilter}` +
+            `&select=id,name,role,department,is_active,${col}` +
+            `&order=${col}.desc&limit=200`
           );
-          if (Array.isArray(rows)) users = rows;
-        } catch { users = []; }
+          return Array.isArray(rows) ? rows : null;
+        } catch {
+          // Maybe is_active column missing → retry without it
+          try {
+            const rows = await db(
+              `/users?${col}=gte.${enc}${deptFilter}` +
+              `&select=id,name,role,department,${col}` +
+              `&order=${col}.desc&limit=200`
+            );
+            return Array.isArray(rows) ? rows : null;
+          } catch { return null; }
+        }
+      };
+
+      let users = (await tryQuery("last_seen"))
+                ?? (await tryQuery("last_login"))
+                ?? [];
+
+      // Final fallback: Supabase auth.users always tracks last_sign_in_at.
+      // If the public.users schema has neither last_seen nor last_login,
+      // we still get a useful answer — anyone whose JWT was issued/refreshed
+      // in the last 15 minutes counts as online.
+      if (users.length === 0) {
+        try {
+          const adminRes = await admin(`/admin/users?per_page=1000`);
+          const authUsers = Array.isArray(adminRes)
+            ? adminRes
+            : (adminRes?.users || []);
+          const cutoffMs  = Date.now() - 15 * 60 * 1000;
+          const activeIds = authUsers
+            .filter(u => u.last_sign_in_at && new Date(u.last_sign_in_at).getTime() > cutoffMs)
+            .map(u => u.id)
+            .filter(isUUID);
+
+          if (activeIds.length) {
+            // Fetch matching profiles in one shot
+            const idList = activeIds.map(encodeURIComponent).join(",");
+            try {
+              const rows = await db(
+                `/users?id=in.(${idList})${deptFilter}` +
+                `&select=id,name,role,department,is_active`
+              );
+              if (Array.isArray(rows)) users = rows;
+            } catch {
+              try {
+                const rows = await db(
+                  `/users?id=in.(${idList})${deptFilter}` +
+                  `&select=id,name,role,department`
+                );
+                if (Array.isArray(rows)) users = rows;
+              } catch { /* give up */ }
+            }
+          }
+        } catch { /* admin API not reachable */ }
       }
 
-      const list = users.map(u => ({
-        name:       u.name,
-        role:       u.role,
-        department: u.department,
-      }));
+      // Exclude only users who are *explicitly* deactivated.
+      const list = users
+        .filter(u => u.is_active !== false)
+        .map(u => ({
+          name:       u.name,
+          role:       u.role,
+          department: u.department,
+        }));
 
       return ok({ total: list.length, users: list }, origin);
     }
