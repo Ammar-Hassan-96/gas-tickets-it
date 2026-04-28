@@ -1,8 +1,38 @@
 # 🔒 تقرير الإصلاحات الأمنية — GAS Internal Tickets
 
 **التاريخ:** 28 أبريل 2026
-**النسخة:** v4.2 (Hardened + Login Fix + Active Sessions Fix)
-**الحالة:** فحص وإصلاح كامل لـ `auth.mjs` + إصلاح "الجلسات النشطة" + إصلاح تسجيل الدخول
+**النسخة:** v4.3 (Hardened + Login Restored + Active Sessions Fix)
+**الحالة:** فحص وإصلاح كامل لـ `auth.mjs` + إصلاح "الجلسات النشطة" + استعادة تدفّق الـ login الأصلي
+
+---
+
+## 🚨 v4.3 — استعادة تدفّق الـ Login الأصلي (مهم جداً)
+
+**المشكلة:** v4.0/v4.1/v4.2 كانت بتعمل الـ login على السيرفر (Netlify Function) عن طريق action جديد اسمه `login_with_username`. ده كان محتاج env var اسمه `SUPABASE_ANON_KEY` (أو `SUPABASE_PUBLISHABLE_KEY`) متظبّط على Netlify. **لو الـ env var ده مش موجود → كل الـ login بيرجع `500` أو `401` ساكت**، والـ client بيعرض رسالة "اسم المستخدم أو كلمة المرور غير صحيحة" مهما كانت البيانات صحّ.
+
+**الإصلاح في v4.3:**
+- ✅ رجّعت `doLogin` في `app.js` للأسلوب الأصلي (2-step flow):
+  1. السيرفر بيحوّل `username → email` فقط (بـ service_role، آمن من الـ enumeration)
+  2. الكلاينت يكلّم Supabase Auth مباشرة بالـ publishable key
+- ✅ شيلت `SUPABASE_ANON` من شرط الـ hard config check — السيرفر بقى يشتغل بـ `SUPABASE_URL` و `SUPABASE_SERVICE_ROLE_KEY` فقط
+- ✅ `change_password` بيرجع رسالة واضحة `503` لو `SUPABASE_ANON_KEY` مش متظبّط (بدل ما يكسر بصمت)
+- ✅ `resolve_username` بقى case-insensitive ومرن مع schema بدون عمود `is_active`
+
+### 🔧 متغيّرات البيئة المطلوبة على Netlify
+
+افتح Netlify → Site → Environment variables، وتأكّد من:
+
+| Variable | Source | Required |
+|---|---|---|
+| `SUPABASE_URL` | عنوان مشروعك على Supabase | ✅ نعم |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase Dashboard → Project Settings → API → **service_role** (سرّي) | ✅ نعم |
+| `SUPABASE_ANON_KEY` | Supabase Dashboard → Project Settings → API → **anon / publishable** | اختياري (لتغيير كلمة المرور فقط) |
+
+> ⚠️ **تحذير أمني:** الـ `service_role` key سرّي جداً ويعطي صلاحيات كاملة على القاعدة (يتجاوز RLS).
+> لا تكتبه أبداً في الكود ولا في أي ملف يُرفع لـ Git. خلّيه فقط في Netlify Environment variables.
+> لو اتسرّب — افتح Supabase Dashboard وأعمل **rotate** فوراً، وحدّث القيمة الجديدة في Netlify.
+
+---
 
 ---
 

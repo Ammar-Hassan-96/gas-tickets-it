@@ -581,22 +581,26 @@ async function doLogin() {
   $('loginErr').style.display = 'none';
 
   try {
-    // v4.0: السيرفر بيعمل username→email + login في request واحدة
-    // الـ client ما بيشوفش الـ email خالص → no user enumeration
-    const loginRes = await fetch(CFG.authEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'login_with_username',
-        username: usernameOrEmail,
-        password
-      })
-    });
-    const session = await loginRes.json();
-    if (!loginRes.ok || !session.access_token) {
-      // نفس رسالة الخطأ سواء اسم غلط أو كلمة سر غلط
-      throw new Error(session.error || 'اسم المستخدم أو كلمة المرور غير صحيحة');
+    // v4.2: 2-step flow (متوافق مع التصميم الأصلي):
+    //  1. السيرفر بيحوّل username→email (بـ service_role، الكلاينت ما يقدرش يـ enumerate)
+    //  2. الكلاينت يكلّم Supabase Auth مباشرة بالـ publishable key
+    let email = usernameOrEmail;
+    if (!usernameOrEmail.includes('@')) {
+      const res = await fetch(CFG.authEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'resolve_username', username: usernameOrEmail })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.email) {
+        // نفس رسالة الخطأ سواء كان username غلط أو password غلط
+        throw new Error('اسم المستخدم أو كلمة المرور غير صحيحة');
+      }
+      email = data.email;
     }
+
+    // تسجيل الدخول مباشرة عبر Supabase Auth (مش عبر Netlify)
+    const session = await _supa.signIn(email, password);
 
     // حفظ الـ session
     localStorage.setItem(CFG.sessionKey, JSON.stringify(session));
