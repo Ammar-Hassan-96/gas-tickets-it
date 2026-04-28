@@ -1,256 +1,710 @@
-// ═══════════════════════════════════════════════════════════
-// GAS IT Desk — Netlify Function v4.0 COMPLETE
-// Path: netlify/functions/auth.mjs
-// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+//  GAS Internal Tickets — Auth & Admin Edge Function
+//  v4.0 — Hardened (April 2026)
+//
+//  CRITICAL CHANGES vs v3.x:
+//  ───────────────────────────────────────────────────────────────
+//  • Every privileged action now enforces a server-side ROLE check
+//    (delete_user, reset_user_password, update_auth_user,
+//     create_user_profile, delete_ticket, save_theme, change_password).
+//    Previously: only the JWT was verified → ANY logged-in user
+//    could escalate to super_admin or wipe other users.
+//
+//  • CORS is fixed: every JSON response now echoes the validated
+//    Origin (or 'null' if disallowed). Previously: hard-coded to
+//    one production origin → broken on staging/preview deploys.
+//
+//  • New `login_with_username` action replaces the deprecated
+//    `resolve_username`. The function performs the username→email
+//    resolution AND the password grant in one round-trip, so the
+//    client never receives the email (mitigates user enumeration).
+//
+//  • UUID + length validation on every body field that flows into
+//    a Supabase URL or auth payload (defense in depth).
+//
+//  • Self-protection: cannot delete yourself, cannot demote
+//    yourself, cannot delete the last super_admin.
+//
+//  • Password policy: minimum 10 characters on any password reset.
+//
+//  • change_password now re-verifies the current password before
+//    rotating credentials (prevents stolen-token account takeover).
+// ═══════════════════════════════════════════════════════════════
 
-const SUPABASE_URL = "https://rmlkhgktwologfhphtyz.supabase.co";
-const SUPABASE_ANON = "sb_publishable_bSRIIPeiuwARjUlSnUJpQg_AIrFZH8B";
-const SVC_KEY = () => process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SUPABASE_URL  = process.env.SUPABASE_URL;
+const SERVICE_ROLE  = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SUPABASE_ANON = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
 
+// ─── Allowed Origins (add new deploy URLs here) ────────────────
 const ALLOWED_ORIGINS = [
-  'https://gas-portal.netlify.app',
-  'http://localhost:8888',
-  'http://localhost:3000',
+  "https://gas-portal.netlify.app",
+  "https://gas-tickets.netlify.app",
+  "http://localhost:8888",
+  "http://localhost:3000",
+  "http://127.0.0.1:8888",
 ];
 
-function getCORS(req) {
-  const origin = req.headers.get('origin') || '';
-  const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+// ─── Validation helpers ────────────────────────────────────────
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const USERNAME_RE = /^[a-zA-Z0-9._-]{2,64}$/;
+
+const isUUID    = (v) => typeof v === "string" && UUID_RE.test(v);
+const isEmail   = (v) => typeof v === "string" && v.length <= 254 && EMAIL_RE.test(v);
+const isUname   = (v) => typeof v === "string" && USERNAME_RE.test(v);
+const isStr     = (v, max = 256) => typeof v === "string" && v.length > 0 && v.length <= max;
+
+// Roles
+const ROLE_SUPER     = "super_admin";
+const ROLE_MANAGER   = "manager";
+const ROLE_SUPER_SET = new Set([ROLE_SUPER]);
+const ROLE_ADMIN_SET = new Set([ROLE_SUPER, ROLE_MANAGER]);
+const VALID_ROLES    = new Set([ROLE_SUPER, ROLE_MANAGER, "supervisor", "employee"]);
+
+// Password policy
+const PASSWORD_MIN = 10;
+function validatePassword(pwd) {
+  if (typeof pwd !== "string") return "كلمة المرور مطلوبة";
+  if (pwd.length < PASSWORD_MIN) return `كلمة المرور لازم تكون ${PASSWORD_MIN} أحرف على الأقل`;
+  if (pwd.length > 128) return "كلمة المرور طويلة جداً";
+  // Require at least one letter and one digit
+  if (!/[A-Za-z]/.test(pwd) || !/\d/.test(pwd)) return "كلمة المرور لازم تحتوي على حروف وأرقام";
+  return null;
+}
+
+// ─── CORS ──────────────────────────────────────────────────────
+function corsHeaders(origin) {
+  const ok = origin && ALLOWED_ORIGINS.includes(origin);
   return {
-    "Access-Control-Allow-Origin": allowed,
+    "Access-Control-Allow-Origin":  ok ? origin : "null",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Vary": "Origin",
+    "Access-Control-Max-Age":       "86400",
+    "Vary":                         "Origin",
   };
 }
-const json = (d, s = 200) => new Response(JSON.stringify(d), { status: s, headers: { "Access-Control-Allow-Origin": "https://gas-portal.netlify.app", "Content-Type": "application/json" } });
-const err  = (m, s = 400) => json({ error: m }, s);
 
-// DB via service_role (bypasses RLS)
+function json(body, status, origin) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      ...corsHeaders(origin),
+    },
+  });
+}
+
+const ok  = (data, origin)         => json(data, 200, origin);
+const err = (msg, status, origin)  => json({ error: msg }, status, origin);
+
+// ─── Supabase REST helpers (service_role) ─────────────────────
 async function db(path, opts = {}) {
-  const key = SVC_KEY();
   const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
     ...opts,
-    headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=representation", ...(opts.headers ?? {}) },
+    headers: {
+      apikey:        SERVICE_ROLE,
+      Authorization: `Bearer ${SERVICE_ROLE}`,
+      "Content-Type": "application/json",
+      Prefer:        "return=representation",
+      ...(opts.headers || {}),
+    },
   });
-  const t = await res.text();
-  if (!res.ok) throw new Error(`DB ${res.status}: ${t}`);
-  return t ? JSON.parse(t) : null;
+  const text = await res.text();
+  if (!res.ok) throw new Error(`DB ${res.status}: ${text}`);
+  return text ? JSON.parse(text) : null;
 }
 
-// Auth Admin
-async function authAdmin(path, opts = {}) {
-  const key = SVC_KEY();
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/admin${path}`, {
+async function admin(path, opts = {}) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1${path}`, {
     ...opts,
-    headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...(opts.headers ?? {}) },
+    headers: {
+      apikey:        SERVICE_ROLE,
+      Authorization: `Bearer ${SERVICE_ROLE}`,
+      "Content-Type": "application/json",
+      ...(opts.headers || {}),
+    },
   });
-  const t = await res.text();
-  if (!res.ok) throw new Error(`AuthAdmin ${res.status}: ${t}`);
-  return t ? JSON.parse(t) : null;
+  const text = await res.text();
+  let parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch { /* keep null */ }
+  if (!res.ok) {
+    const m = parsed?.msg || parsed?.error_description || parsed?.error || text || `Auth ${res.status}`;
+    const e = new Error(m);
+    e.status = res.status;
+    throw e;
+  }
+  return parsed;
 }
 
-// Verify Supabase JWT token → returns auth user or null
+// Verify a user's JWT by asking Supabase
 async function verifyToken(token) {
-  if (!token) return null;
+  if (!isStr(token, 4096)) return null;
   try {
     const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
       headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${token}` },
     });
     if (!res.ok) return null;
-    const d = await res.json();
-    return d?.id ? d : null;
+    return await res.json();
   } catch { return null; }
 }
 
-// SHA-256 helper
-async function sha256(msg) {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+// Look up the requester's profile (role + department + active flag)
+async function getProfile(authId) {
+  if (!isUUID(authId)) return null;
+  try {
+    const rows = await db(`/users?id=eq.${encodeURIComponent(authId)}&select=id,role,department,is_active,username,email&limit=1`);
+    return rows?.[0] || null;
+  } catch { return null; }
 }
 
-// ═══════════════════════════════════════════════════════════
-export default async function handler(req) {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: getCORS(req) });
+// requireAuth: returns { au, me } or sends back an error response
+async function requireAuth(token, origin) {
+  const au = await verifyToken(token);
+  if (!au) return { error: err("Unauthorized", 401, origin) };
+  const me = await getProfile(au.id);
+  if (!me)              return { error: err("Account not found", 401, origin) };
+  if (me.is_active === false) return { error: err("Account disabled", 403, origin) };
+  return { au, me };
+}
 
+async function requireSuperAdmin(token, origin) {
+  const r = await requireAuth(token, origin);
+  if (r.error) return r;
+  if (!ROLE_SUPER_SET.has(r.me.role)) return { error: err("Forbidden — super admin only", 403, origin) };
+  return r;
+}
+
+async function requireAdmin(token, origin) {
+  const r = await requireAuth(token, origin);
+  if (r.error) return r;
+  if (!ROLE_ADMIN_SET.has(r.me.role)) return { error: err("Forbidden — admin only", 403, origin) };
+  return r;
+}
+
+// Count remaining super_admins so we never lock the org out
+async function countSuperAdmins(excludeId = null) {
+  const filter = excludeId
+    ? `?role=eq.super_admin&is_active=eq.true&id=neq.${encodeURIComponent(excludeId)}&select=id`
+    : `?role=eq.super_admin&is_active=eq.true&select=id`;
+  const rows = await db(`/users${filter}`);
+  return Array.isArray(rows) ? rows.length : 0;
+}
+
+// ─── Handler ───────────────────────────────────────────────────
+export default async (request) => {
+  const origin = request.headers.get("origin") || "";
+
+  // Preflight
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders(origin) });
+  }
+  if (request.method !== "POST") {
+    return err("Method not allowed", 405, origin);
+  }
+
+  // Hard config check — fail loud, never silently
+  if (!SUPABASE_URL || !SERVICE_ROLE || !SUPABASE_ANON) {
+    return err("Server misconfigured (missing env vars)", 500, origin);
+  }
+
+  // Parse body
   let body;
-  try { body = await req.json(); } catch { return err("Invalid JSON"); }
-  const { action, token } = body;
+  try {
+    const raw = await request.text();
+    if (!raw || raw.length > 32_768) return err("Invalid request body", 400, origin);
+    body = JSON.parse(raw);
+  } catch {
+    return err("Invalid JSON", 400, origin);
+  }
+
+  const action = body?.action;
+  if (!isStr(action, 64)) return err("Missing action", 400, origin);
 
   try {
-    // ─────────────────────────────────────────────────────
-    // resolve_username: يحوّل username → email (للـ login)
-    // ─────────────────────────────────────────────────────
+    // ───────────────────────────────────────────────────────────
+    //  PUBLIC ACTIONS (no token) — login + session restore only
+    // ───────────────────────────────────────────────────────────
+
+    // NEW: combined username→login. Client never sees the email.
+    if (action === "login_with_username") {
+      const { username, password } = body;
+      if (!isStr(username, 254) || !isStr(password, 128)) {
+        return err("بيانات الدخول غير صحيحة", 400, origin);
+      }
+
+      // Allow either a username OR a literal email
+      let email = null;
+      if (username.includes("@")) {
+        if (!isEmail(username)) return err("بيانات الدخول غير صحيحة", 400, origin);
+        email = username.toLowerCase();
+      } else {
+        if (!isUname(username)) return err("بيانات الدخول غير صحيحة", 400, origin);
+        try {
+          const rows = await db(`/users?username=eq.${encodeURIComponent(username)}&select=email,is_active&limit=1`);
+          if (rows?.length && rows[0].is_active && isEmail(rows[0].email)) {
+            email = rows[0].email;
+          }
+        } catch { /* fall through to generic error below */ }
+      }
+
+      // Constant-ish response time to reduce timing oracle
+      const minDelay = new Promise(r => setTimeout(r, 250));
+
+      if (!email) {
+        await minDelay;
+        return err("اسم المستخدم أو كلمة المرور غير صحيحة", 401, origin);
+      }
+
+      // Password grant via Supabase Auth (uses anon key + RLS limits)
+      const tokRes = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_ANON, "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const tok = await tokRes.json().catch(() => ({}));
+      await minDelay;
+
+      if (!tokRes.ok || !tok.access_token) {
+        return err("اسم المستخدم أو كلمة المرور غير صحيحة", 401, origin);
+      }
+
+      // Best-effort: refresh last_login (don't fail the login on error)
+      try {
+        if (tok.user?.id) {
+          await db(`/users?id=eq.${encodeURIComponent(tok.user.id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ last_login: new Date().toISOString() }),
+          });
+        }
+      } catch { /* ignore */ }
+
+      return ok({
+        access_token:  tok.access_token,
+        refresh_token: tok.refresh_token,
+        expires_in:    tok.expires_in,
+        expires_at:    tok.expires_at,
+        token_type:    tok.token_type,
+        user:          tok.user,
+      }, origin);
+    }
+
+    // DEPRECATED — kept only to avoid breaking older cached app.js
+    // Returns email but with a constant minimum delay; new client uses
+    // login_with_username instead.
     if (action === "resolve_username") {
       const { username } = body;
-      if (!username) return err("Missing username");
-      const rows = await db(`/users?username=eq.${encodeURIComponent(username)}&select=email&is_active=eq.true`);
-      if (!rows?.length) return err("Not found", 404);
-      return json({ email: rows[0].email });
+      const minDelay = new Promise(r => setTimeout(r, 250));
+      if (!isUname(username)) {
+        await minDelay;
+        return err("اسم المستخدم غير صحيح", 400, origin);
+      }
+      try {
+        const rows = await db(`/users?username=eq.${encodeURIComponent(username)}&select=email,is_active&limit=1`);
+        await minDelay;
+        if (rows?.length && rows[0].is_active && isEmail(rows[0].email)) {
+          return ok({ email: rows[0].email }, origin);
+        }
+      } catch { /* fall through */ }
+      await minDelay;
+      // Generic 401 — same message for "not found" and any other failure
+      return err("اسم المستخدم أو كلمة المرور غير صحيحة", 401, origin);
     }
 
-    // ─────────────────────────────────────────────────────
-    // get_sessions
-    // ─────────────────────────────────────────────────────
+    // ───────────────────────────────────────────────────────────
+    //  AUTHENTICATED ACTIONS (token required)
+    // ───────────────────────────────────────────────────────────
+
+    // heartbeat — bumps the requester's last_seen so the dashboard
+    // can show them as "online". Called every ~3 minutes by the client.
+    // Safe-by-default: if the users table doesn't have a last_seen
+    // column, falls back to last_login.
+    if (action === "heartbeat") {
+      const r = await requireAuth(body.token, origin);
+      if (r.error) return r.error;
+      const now = new Date().toISOString();
+      try {
+        await db(`/users?id=eq.${encodeURIComponent(r.au.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ last_seen: now }),
+        });
+      } catch {
+        try {
+          await db(`/users?id=eq.${encodeURIComponent(r.au.id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ last_login: now }),
+          });
+        } catch { /* ignore — column missing */ }
+      }
+      return ok({ success: true, ts: now }, origin);
+    }
+
+    // get_sessions — returns currently-online users
+    //   - super_admin → everyone in the system
+    //   - manager     → only users in their own department
+    //   - others      → forbidden
+    // "Online" = last_seen (or last_login) within the last 10 minutes.
     if (action === "get_sessions") {
-      const au = await verifyToken(token);
-      if (!au) return err("Unauthorized", 401);
-      const rows = await db(`/sessions?user_id=eq.${au.id}&select=id,created_at,last_seen,expires_at`);
-      return json({ sessions: rows || [] });
+      const r = await requireAuth(body.token, origin);
+      if (r.error) return r.error;
+      if (!ROLE_ADMIN_SET.has(r.me.role)) {
+        return err("Forbidden", 403, origin);
+      }
+
+      const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const enc    = encodeURIComponent(cutoff);
+
+      // Department filter for non-super admins
+      const deptFilter = (r.me.role === ROLE_MANAGER && r.me.department)
+        ? `&department=eq.${encodeURIComponent(r.me.department)}`
+        : "";
+
+      // Try last_seen first; fall back to last_login if the column
+      // doesn't exist in the schema.
+      let users = [];
+      try {
+        const rows = await db(
+          `/users?last_seen=gte.${enc}&is_active=eq.true${deptFilter}` +
+          `&select=id,name,role,department,last_seen&order=last_seen.desc&limit=200`
+        );
+        if (Array.isArray(rows)) users = rows;
+      } catch {
+        try {
+          const rows = await db(
+            `/users?last_login=gte.${enc}&is_active=eq.true${deptFilter}` +
+            `&select=id,name,role,department,last_login&order=last_login.desc&limit=200`
+          );
+          if (Array.isArray(rows)) users = rows;
+        } catch { users = []; }
+      }
+
+      const list = users.map(u => ({
+        name:       u.name,
+        role:       u.role,
+        department: u.department,
+      }));
+
+      return ok({ total: list.length, users: list }, origin);
     }
 
-    // ─────────────────────────────────────────────────────
-    // save_theme
-    // ─────────────────────────────────────────────────────
+    // change_password — REQUIRES current password verification
+    if (action === "change_password") {
+      const r = await requireAuth(body.token, origin);
+      if (r.error) return r.error;
+
+      const { old_password, new_password } = body;
+      if (!isStr(old_password, 128)) return err("كلمة المرور الحالية مطلوبة", 400, origin);
+
+      const pErr = validatePassword(new_password);
+      if (pErr) return err(pErr, 400, origin);
+      if (old_password === new_password) return err("كلمة المرور الجديدة لازم تكون مختلفة", 400, origin);
+
+      // Re-authenticate with the OLD password before allowing rotation
+      const reauth = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_ANON, "Content-Type": "application/json" },
+        body: JSON.stringify({ email: r.me.email, password: old_password }),
+      });
+      if (!reauth.ok) {
+        return err("كلمة المرور الحالية غير صحيحة", 401, origin);
+      }
+
+      // Rotate via admin API
+      await admin(`/admin/users/${encodeURIComponent(r.au.id)}`, {
+        method: "PUT",
+        body: JSON.stringify({ password: new_password }),
+      });
+
+      return ok({ success: true }, origin);
+    }
+
+    // save_theme — current user only, ignore body.user_id entirely
     if (action === "save_theme") {
-      const au = await verifyToken(token);
-      const uid = au?.id || body.user_id;
-      if (!uid) return err("Unauthorized", 401);
-      await db(`/users?id=eq.${uid}`, { method: "PATCH", body: JSON.stringify({ theme_pref: body.theme }) });
-      return json({ success: true });
+      const r = await requireAuth(body.token, origin);
+      if (r.error) return r.error;
+      const theme = body.theme;
+      if (theme !== "dark" && theme !== "light") return err("Invalid theme", 400, origin);
+
+      await db(`/users?id=eq.${encodeURIComponent(r.au.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ theme_pref: theme }),
+      });
+      return ok({ success: true }, origin);
     }
 
-    // ─────────────────────────────────────────────────────
-    // create_auth_user
-    // ─────────────────────────────────────────────────────
+    // mark_notif_read — only the owner of the notification
+    if (action === "mark_notif_read") {
+      const r = await requireAuth(body.token, origin);
+      if (r.error) return r.error;
+
+      if (body.notif_id) {
+        if (!isUUID(body.notif_id)) return err("Invalid notif_id", 400, origin);
+        await db(
+          `/notifications?id=eq.${encodeURIComponent(body.notif_id)}&user_id=eq.${encodeURIComponent(r.au.id)}`,
+          { method: "PATCH", body: JSON.stringify({ is_read: true, read_at: new Date().toISOString() }) },
+        );
+      } else {
+        await db(
+          `/notifications?user_id=eq.${encodeURIComponent(r.au.id)}&is_read=eq.false`,
+          { method: "PATCH", body: JSON.stringify({ is_read: true, read_at: new Date().toISOString() }) },
+        );
+      }
+      return ok({ success: true }, origin);
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  ADMIN-ONLY ACTIONS  (super_admin / manager)
+    // ───────────────────────────────────────────────────────────
+
+    // create_auth_user — admin only (manager can create within own dept)
     if (action === "create_auth_user") {
-      const au = await verifyToken(token);
-      if (!au) return err("Unauthorized", 401);
-      const me = await db(`/users?id=eq.${au.id}&select=role,department`);
-      if (!me?.length || !["super_admin","manager"].includes(me[0].role)) return err("Forbidden", 403);
+      const r = await requireAdmin(body.token, origin);
+      if (r.error) return r.error;
 
-      const { email, password, username, name, role, department } = body;
-      if (!email || !password || !username) return err("Missing fields");
+      const { email, password, user_metadata } = body;
+      if (!isEmail(email)) return err("Invalid email", 400, origin);
+      const pErr = validatePassword(password);
+      if (pErr) return err(pErr, 400, origin);
 
-      const newAuth = await authAdmin("/users", {
+      // A non-super manager can only create users in their own department
+      // and may NOT create super_admins.
+      const meta = (user_metadata && typeof user_metadata === "object") ? user_metadata : {};
+      if (meta.role && !VALID_ROLES.has(meta.role)) return err("Invalid role", 400, origin);
+      if (meta.role === ROLE_SUPER && r.me.role !== ROLE_SUPER) {
+        return err("Forbidden — only super admins can create super admins", 403, origin);
+      }
+      if (r.me.role === ROLE_MANAGER) {
+        if (meta.department && meta.department !== r.me.department) {
+          return err("Forbidden — managers can only create users in their own department", 403, origin);
+        }
+      }
+
+      const created = await admin("/admin/users", {
         method: "POST",
         body: JSON.stringify({
-          email, password, email_confirm: true,
-          user_metadata: { username, name: name || username, role: role || "employee", department: department || "" },
+          email,
+          password,
+          email_confirm: true,
+          user_metadata: meta,
         }),
       });
-      return json({ success: true, user_id: newAuth.id, auth_id: newAuth.id });
+      return ok({ user: created }, origin);
     }
 
-    // ─────────────────────────────────────────────────────
-    // create_user_profile
-    // ─────────────────────────────────────────────────────
+    // create_user_profile — admin only
     if (action === "create_user_profile") {
-      const au = await verifyToken(token);
-      if (!au) return err("Unauthorized", 401);
-      const { user_id, username, name, email, role, department } = body;
-      if (!user_id || !username) return err("Missing fields");
-      await db("/users", {
-        method: "POST",
-        body: JSON.stringify({ id: user_id, username, name: name || username, email, role: role || "employee", department: department || "", is_active: true }),
-      });
-      return json({ success: true });
-    }
+      const r = await requireAdmin(body.token, origin);
+      if (r.error) return r.error;
 
-    // ─────────────────────────────────────────────────────
-    // update_auth_user
-    // ─────────────────────────────────────────────────────
-    if (action === "update_auth_user") {
-      const au = await verifyToken(token);
-      if (!au) return err("Unauthorized", 401);
-      const { user_id, email, role, department, name, username, is_active } = body;
-      if (!user_id) return err("Missing user_id");
-
-      // تحديث auth.users
-      const authUpdate = {};
-      if (email) authUpdate.email = email;
-      const existMeta = (await authAdmin(`/users/${user_id}`))?.user_metadata || {};
-      const newMeta = { ...existMeta };
-      if (name)       newMeta.name = name;
-      if (username)   newMeta.username = username;
-      if (role)       newMeta.role = role;
-      if (department !== undefined) newMeta.department = department;
-      authUpdate.user_metadata = newMeta;
-      await authAdmin(`/users/${user_id}`, { method: "PUT", body: JSON.stringify(authUpdate) });
-
-      // تحديث public.users
-      const pub = { updated_at: new Date().toISOString() };
-      if (email)     pub.email = email;
-      if (name)      pub.name = name;
-      if (username)  pub.username = username;
-      if (role)      pub.role = role;
-      if (department !== undefined) pub.department = department;
-      if (is_active !== undefined)  pub.is_active  = is_active;
-      await db(`/users?id=eq.${user_id}`, { method: "PATCH", body: JSON.stringify(pub) });
-
-      return json({ success: true });
-    }
-
-    // ─────────────────────────────────────────────────────
-    // delete_user
-    // ─────────────────────────────────────────────────────
-    if (action === "delete_user") {
-      const au = await verifyToken(token);
-      if (!au) return err("Unauthorized", 401);
-      const { user_id } = body;
-      if (!user_id) return err("Missing user_id");
-      try { await authAdmin(`/users/${user_id}`, { method: "DELETE" }); } catch {}
-      await db(`/users?id=eq.${user_id}`, { method: "DELETE" });
-      return json({ success: true });
-    }
-
-    // ─────────────────────────────────────────────────────
-    // reset_user_password
-    // ─────────────────────────────────────────────────────
-    if (action === "reset_user_password") {
-      const au = await verifyToken(token);
-      if (!au) return err("Unauthorized", 401);
-      const { user_id, new_password } = body;
-      if (!user_id || !new_password) return err("Missing fields");
-      await authAdmin(`/users/${user_id}`, { method: "PUT", body: JSON.stringify({ password: new_password }) });
-      return json({ success: true });
-    }
-
-    // ─────────────────────────────────────────────────────
-    // change_password
-    // ─────────────────────────────────────────────────────
-    if (action === "change_password") {
-      const au = await verifyToken(token);
-      if (!au) return err("Unauthorized", 401);
-      const { new_password } = body;
-      if (!new_password) return err("Missing new_password");
-      await authAdmin(`/users/${au.id}`, { method: "PUT", body: JSON.stringify({ password: new_password }) });
-      return json({ success: true });
-    }
-
-    // ─────────────────────────────────────────────────────
-    // delete_ticket
-    // ─────────────────────────────────────────────────────
-    if (action === "delete_ticket") {
-      const au = await verifyToken(token);
-      if (!au) return err("Unauthorized", 401);
-      const { ticket_id } = body;
-      if (!ticket_id) return err("Missing ticket_id");
-      await db(`/ticket_comments?ticket_id=eq.${ticket_id}`, { method: "DELETE" });
-      await db(`/tickets?id=eq.${ticket_id}`, { method: "DELETE" });
-      return json({ success: true });
-    }
-
-    // ─────────────────────────────────────────────────────
-    // mark_notif_read
-    // ─────────────────────────────────────────────────────
-    if (action === "mark_notif_read") {
-      const au = await verifyToken(token);
-      if (!au) return err("Unauthorized", 401);
-      if (body.notif_id) {
-        await db(`/notifications?id=eq.${body.notif_id}&user_id=eq.${au.id}`, { method: "PATCH", body: JSON.stringify({ is_read: true }) });
-      } else {
-        await db(`/notifications?user_id=eq.${au.id}&is_read=eq.false`, { method: "PATCH", body: JSON.stringify({ is_read: true }) });
+      const { profile } = body;
+      if (!profile || typeof profile !== "object") return err("Invalid profile", 400, origin);
+      if (!isUUID(profile.id))                     return err("Invalid profile.id", 400, origin);
+      if (profile.email && !isEmail(profile.email))return err("Invalid email", 400, origin);
+      if (profile.role && !VALID_ROLES.has(profile.role)) return err("Invalid role", 400, origin);
+      if (profile.role === ROLE_SUPER && r.me.role !== ROLE_SUPER) {
+        return err("Forbidden — only super admins can create super admins", 403, origin);
       }
-      return json({ success: true });
+      if (r.me.role === ROLE_MANAGER && profile.department && profile.department !== r.me.department) {
+        return err("Forbidden — managers can only create users in their own department", 403, origin);
+      }
+
+      const safe = {
+        id:          profile.id,
+        email:       profile.email,
+        username:    profile.username,
+        name:        profile.name,
+        role:        profile.role || "employee",
+        department:  profile.department || null,
+        phone:       profile.phone || null,
+        is_active:   profile.is_active !== false,
+      };
+      const inserted = await db("/users", { method: "POST", body: JSON.stringify(safe) });
+      return ok({ profile: inserted?.[0] || inserted }, origin);
     }
 
-    return err(`Unknown action: ${action}`);
+    // update_auth_user — admin only, with strict guards
+    if (action === "update_auth_user") {
+      const r = await requireAdmin(body.token, origin);
+      if (r.error) return r.error;
 
+      const { user_id, email, password, user_metadata } = body;
+      if (!isUUID(user_id)) return err("Invalid user_id", 400, origin);
+
+      // Look up the target so we can enforce per-role rules
+      const target = await getProfile(user_id);
+      if (!target) return err("Target user not found", 404, origin);
+
+      // Managers: only their own department, never edit super_admins
+      if (r.me.role === ROLE_MANAGER) {
+        if (target.role === ROLE_SUPER) {
+          return err("Forbidden — managers cannot edit super admins", 403, origin);
+        }
+        if (target.department && target.department !== r.me.department) {
+          return err("Forbidden — managers can only edit users in their own department", 403, origin);
+        }
+      }
+
+      // Build the auth payload safely
+      const payload = {};
+      if (email !== undefined) {
+        if (!isEmail(email)) return err("Invalid email", 400, origin);
+        payload.email = email;
+      }
+      if (password !== undefined) {
+        const pErr = validatePassword(password);
+        if (pErr) return err(pErr, 400, origin);
+        payload.password = password;
+      }
+      if (user_metadata !== undefined) {
+        if (!user_metadata || typeof user_metadata !== "object") return err("Invalid user_metadata", 400, origin);
+        const newRole = user_metadata.role;
+        if (newRole !== undefined) {
+          if (!VALID_ROLES.has(newRole)) return err("Invalid role", 400, origin);
+          // Only super_admin can grant or revoke super_admin
+          if ((newRole === ROLE_SUPER || target.role === ROLE_SUPER) && r.me.role !== ROLE_SUPER) {
+            return err("Forbidden — only super admins can change super admin role", 403, origin);
+          }
+          // Self-demotion guard: never let a super_admin demote themselves
+          if (user_id === r.au.id && r.me.role === ROLE_SUPER && newRole !== ROLE_SUPER) {
+            return err("Forbidden — you cannot demote yourself", 403, origin);
+          }
+          // Don't lock the system out
+          if (target.role === ROLE_SUPER && newRole !== ROLE_SUPER) {
+            const remaining = await countSuperAdmins(user_id);
+            if (remaining < 1) return err("Cannot demote the last super admin", 403, origin);
+          }
+        }
+        payload.user_metadata = user_metadata;
+      }
+
+      if (Object.keys(payload).length === 0) return err("Nothing to update", 400, origin);
+
+      const updated = await admin(`/admin/users/${encodeURIComponent(user_id)}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+
+      // Mirror role/department changes into public.users
+      if (user_metadata && (user_metadata.role || user_metadata.department || user_metadata.name)) {
+        const mirror = {};
+        if (user_metadata.role)       mirror.role = user_metadata.role;
+        if (user_metadata.department) mirror.department = user_metadata.department;
+        if (user_metadata.name)       mirror.name = user_metadata.name;
+        if (Object.keys(mirror).length) {
+          try {
+            await db(`/users?id=eq.${encodeURIComponent(user_id)}`, {
+              method: "PATCH",
+              body: JSON.stringify(mirror),
+            });
+          } catch { /* mirror is best-effort */ }
+        }
+      }
+
+      return ok({ user: updated }, origin);
+    }
+
+    // reset_user_password — admin only
+    if (action === "reset_user_password") {
+      const r = await requireAdmin(body.token, origin);
+      if (r.error) return r.error;
+
+      const { user_id, new_password } = body;
+      if (!isUUID(user_id))         return err("Invalid user_id", 400, origin);
+      const pErr = validatePassword(new_password);
+      if (pErr)                     return err(pErr, 400, origin);
+
+      const target = await getProfile(user_id);
+      if (!target) return err("Target user not found", 404, origin);
+
+      // Managers: own department only, never reset super_admin passwords
+      if (r.me.role === ROLE_MANAGER) {
+        if (target.role === ROLE_SUPER) {
+          return err("Forbidden — managers cannot reset super admin passwords", 403, origin);
+        }
+        if (target.department && target.department !== r.me.department) {
+          return err("Forbidden — managers can only reset users in their own department", 403, origin);
+        }
+      }
+
+      await admin(`/admin/users/${encodeURIComponent(user_id)}`, {
+        method: "PUT",
+        body: JSON.stringify({ password: new_password }),
+      });
+      return ok({ success: true }, origin);
+    }
+
+    // delete_user — SUPER ADMIN only, with self + last-super guards
+    if (action === "delete_user") {
+      const r = await requireSuperAdmin(body.token, origin);
+      if (r.error) return r.error;
+
+      const { user_id } = body;
+      if (!isUUID(user_id)) return err("Invalid user_id", 400, origin);
+      if (user_id === r.au.id) return err("لا يمكنك حذف حسابك الخاص", 403, origin);
+
+      const target = await getProfile(user_id);
+      if (!target) return err("Target user not found", 404, origin);
+
+      // Never delete the last super_admin
+      if (target.role === ROLE_SUPER) {
+        const remaining = await countSuperAdmins(user_id);
+        if (remaining < 1) return err("Cannot delete the last super admin", 403, origin);
+      }
+
+      // Soft-delete the profile first (preserves FKs / audit trail),
+      // then hard-delete the auth user. We never touch tickets.
+      try {
+        await db(`/users?id=eq.${encodeURIComponent(user_id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ is_active: false, deleted_at: new Date().toISOString() }),
+        });
+      } catch { /* if column doesn't exist, fall through */ }
+
+      await admin(`/admin/users/${encodeURIComponent(user_id)}`, { method: "DELETE" });
+
+      // Finally remove the public profile row
+      try {
+        await db(`/users?id=eq.${encodeURIComponent(user_id)}`, { method: "DELETE" });
+      } catch { /* row may already be cascaded */ }
+
+      return ok({ success: true }, origin);
+    }
+
+    // delete_ticket — SUPER ADMIN only (destructive)
+    if (action === "delete_ticket") {
+      const r = await requireSuperAdmin(body.token, origin);
+      if (r.error) return r.error;
+
+      const { ticket_id } = body;
+      if (!isUUID(ticket_id)) return err("Invalid ticket_id", 400, origin);
+
+      // Children first, then ticket itself. We do NOT touch storage objects
+      // here — surface a warning if there are attachments so an admin can
+      // reconcile manually instead of silently orphaning files.
+      let attachCount = 0;
+      try {
+        const att = await db(`/ticket_attachments?ticket_id=eq.${encodeURIComponent(ticket_id)}&select=id`);
+        attachCount = Array.isArray(att) ? att.length : 0;
+      } catch { /* attachments table may not exist */ }
+
+      try { await db(`/ticket_comments?ticket_id=eq.${encodeURIComponent(ticket_id)}`,    { method: "DELETE" }); } catch {}
+      try { await db(`/ticket_attachments?ticket_id=eq.${encodeURIComponent(ticket_id)}`, { method: "DELETE" }); } catch {}
+      try { await db(`/notifications?ticket_id=eq.${encodeURIComponent(ticket_id)}`,     { method: "DELETE" }); } catch {}
+      await db(`/tickets?id=eq.${encodeURIComponent(ticket_id)}`, { method: "DELETE" });
+
+      return ok({ success: true, orphan_attachments: attachCount }, origin);
+    }
+
+    // ───────────────────────────────────────────────────────────
+    return err(`Unknown action: ${action}`, 400, origin);
   } catch (e) {
-    console.error(`[auth.mjs] action=${action} error:`, e.message);
-    return json({ error: e.message || "Internal server error" }, 500);
+    // Never leak stack traces or DB error strings to the client
+    console.error("[auth.mjs]", action, e);
+    const status = e?.status && Number.isInteger(e.status) ? e.status : 500;
+    const msg = status >= 500 ? "Internal error" : (e?.message || "Request failed");
+    return err(msg, status, origin);
   }
-}
+};
 
 export const config = { path: "/api/auth" };
