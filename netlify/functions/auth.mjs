@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// GAS IT Desk — Netlify Function v4.0 COMPLETE
+// GAS IT Desk — Netlify Function v4.1 (FIXED SESSIONS)
 // Path: netlify/functions/auth.mjs
 // ═══════════════════════════════════════════════════════════
 
@@ -63,12 +63,6 @@ async function verifyToken(token) {
   } catch { return null; }
 }
 
-// SHA-256 helper
-async function sha256(msg) {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
-}
-
 // ═══════════════════════════════════════════════════════════
 export default async function handler(req) {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: getCORS(req) });
@@ -79,7 +73,7 @@ export default async function handler(req) {
 
   try {
     // ─────────────────────────────────────────────────────
-    // resolve_username: يحوّل username → email (للـ login)
+    // resolve_username
     // ─────────────────────────────────────────────────────
     if (action === "resolve_username") {
       const { username } = body;
@@ -90,13 +84,37 @@ export default async function handler(req) {
     }
 
     // ─────────────────────────────────────────────────────
-    // get_sessions
+    // get_sessions (FIXED)
     // ─────────────────────────────────────────────────────
     if (action === "get_sessions") {
       const au = await verifyToken(token);
       if (!au) return err("Unauthorized", 401);
-      const rows = await db(`/sessions?user_id=eq.${au.id}&select=id,created_at,last_seen,expires_at`);
-      return json({ sessions: rows || [] });
+
+      // جلب بيانات المستخدم الحالي لمعرفة دوره وقسمه
+      const me = await db(`/users?id=eq.${au.id}&select=role,department`);
+      if (!me?.length) return err("User profile not found", 404);
+      const myRole = me[0].role;
+      const myDept = me[0].department;
+
+      // تعريف "المتصل حالياً" بأنه من ظهر في آخر 5 دقائق
+      const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      
+      let query = `/users?last_seen=gt.${fiveMinsAgo}&select=id,name,role,department,last_seen&is_active=eq.true`;
+      
+      // إذا كان مديراً، يرى فقط المتصلين من قسمه
+      if (myRole === 'manager' || myRole === 'supervisor') {
+        query += `&department=eq.${encodeURIComponent(myDept)}`;
+      } 
+      // إذا لم يكن سوبير أدمن ولا مديراً، لا يرى شيئاً (أمان إضافي)
+      else if (myRole !== 'super_admin') {
+        return json({ total: 0, users: [] });
+      }
+
+      const activeUsers = await db(query);
+      return json({ 
+        total: activeUsers?.length || 0, 
+        users: activeUsers || [] 
+      });
     }
 
     // ─────────────────────────────────────────────────────
@@ -156,7 +174,6 @@ export default async function handler(req) {
       const { user_id, email, role, department, name, username, is_active } = body;
       if (!user_id) return err("Missing user_id");
 
-      // تحديث auth.users
       const authUpdate = {};
       if (email) authUpdate.email = email;
       const existMeta = (await authAdmin(`/users/${user_id}`))?.user_metadata || {};
@@ -168,7 +185,6 @@ export default async function handler(req) {
       authUpdate.user_metadata = newMeta;
       await authAdmin(`/users/${user_id}`, { method: "PUT", body: JSON.stringify(authUpdate) });
 
-      // تحديث public.users
       const pub = { updated_at: new Date().toISOString() };
       if (email)     pub.email = email;
       if (name)      pub.name = name;
