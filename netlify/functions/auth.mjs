@@ -140,12 +140,18 @@ async function admin(path, opts = {}) {
   return parsed;
 }
 
-// Verify a user's JWT by asking Supabase
+// Verify a user's JWT by asking Supabase. The JWT in the Authorization
+// header is what's actually validated; the apikey header just identifies
+// the project. We use SERVICE_ROLE here (always present) so this works
+// even when SUPABASE_ANON_KEY isn't configured as an env var.
 async function verifyToken(token) {
   if (!isStr(token, 4096)) return null;
   try {
     const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${token}` },
+      headers: {
+        apikey:        SUPABASE_ANON || SERVICE_ROLE,
+        Authorization: `Bearer ${token}`,
+      },
     });
     if (!res.ok) return null;
     return await res.json();
@@ -280,10 +286,15 @@ export default async (request) => {
         return err("اسم المستخدم أو كلمة المرور غير صحيحة", 401, origin);
       }
 
-      // Password grant via Supabase Auth (uses anon key + RLS limits)
+      // Password grant via Supabase Auth.
+      // Falls back to SERVICE_ROLE for the apikey header so the call
+      // succeeds even when SUPABASE_ANON_KEY isn't set as an env var.
       const tokRes = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
         method: "POST",
-        headers: { apikey: SUPABASE_ANON, "Content-Type": "application/json" },
+        headers: {
+          apikey:        SUPABASE_ANON || SERVICE_ROLE,
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ email, password }),
       });
       const tok = await tokRes.json().catch(() => ({}));
@@ -437,13 +448,13 @@ export default async (request) => {
       if (old_password === new_password) return err("كلمة المرور الجديدة لازم تكون مختلفة", 400, origin);
 
       // Re-authenticate with the OLD password before allowing rotation.
-      // Requires SUPABASE_ANON. If missing, return clear setup error.
-      if (!SUPABASE_ANON) {
-        return err("مطلوب ضبط SUPABASE_ANON_KEY في إعدادات Netlify لتفعيل تغيير كلمة المرور بأمان", 503, origin);
-      }
+      // Falls back to SERVICE_ROLE for the apikey header (both work).
       const reauth = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
         method: "POST",
-        headers: { apikey: SUPABASE_ANON, "Content-Type": "application/json" },
+        headers: {
+          apikey:        SUPABASE_ANON || SERVICE_ROLE,
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ email: r.me.email, password: old_password }),
       });
       if (!reauth.ok) {
