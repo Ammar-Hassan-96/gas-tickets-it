@@ -47,7 +47,9 @@ const ALLOWED_ORIGINS = [
 // ─── Validation helpers ────────────────────────────────────────
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const USERNAME_RE = /^[a-zA-Z0-9._-]{2,64}$/;
+// Username: allow letters (any unicode, incl. Arabic), digits, ._-, 1-64 chars
+// Reject obvious injection chars: % & ( ) [ ] { } ; ' " < > ` whitespace
+const USERNAME_RE = /^[^\s%&()\[\]{};'"<>`\\?#=]{1,64}$/u;
 
 const isUUID    = (v) => typeof v === "string" && UUID_RE.test(v);
 const isEmail   = (v) => typeof v === "string" && v.length <= 254 && EMAIL_RE.test(v);
@@ -236,17 +238,36 @@ export default async (request) => {
 
       // Allow either a username OR a literal email
       let email = null;
-      if (username.includes("@")) {
-        if (!isEmail(username)) return err("بيانات الدخول غير صحيحة", 400, origin);
-        email = username.toLowerCase();
+      const uname = username.trim();
+      if (uname.includes("@")) {
+        if (!isEmail(uname)) return err("بيانات الدخول غير صحيحة", 400, origin);
+        email = uname.toLowerCase();
       } else {
-        if (!isUname(username)) return err("بيانات الدخول غير صحيحة", 400, origin);
+        if (!isUname(uname)) return err("بيانات الدخول غير صحيحة", 400, origin);
+        // Case-insensitive lookup. Don't enforce is_active here —
+        // if the user is deactivated, the password grant itself
+        // will fail. We also gracefully degrade if is_active column
+        // doesn't exist in the schema.
+        let row = null;
         try {
-          const rows = await db(`/users?username=eq.${encodeURIComponent(username)}&select=email,is_active&limit=1`);
-          if (rows?.length && rows[0].is_active && isEmail(rows[0].email)) {
-            email = rows[0].email;
-          }
-        } catch { /* fall through to generic error below */ }
+          const rows = await db(
+            `/users?username=ilike.${encodeURIComponent(uname)}` +
+            `&select=email,is_active&limit=1`
+          );
+          row = rows?.[0] || null;
+        } catch {
+          // Fallback: schema may not have is_active column
+          try {
+            const rows = await db(
+              `/users?username=ilike.${encodeURIComponent(uname)}` +
+              `&select=email&limit=1`
+            );
+            row = rows?.[0] || null;
+          } catch { row = null; }
+        }
+        if (row && row.is_active !== false && isEmail(row.email)) {
+          email = row.email;
+        }
       }
 
       // Constant-ish response time to reduce timing oracle
@@ -296,18 +317,31 @@ export default async (request) => {
     if (action === "resolve_username") {
       const { username } = body;
       const minDelay = new Promise(r => setTimeout(r, 250));
-      if (!isUname(username)) {
+      const uname = (typeof username === "string" ? username.trim() : "");
+      if (!isUname(uname)) {
         await minDelay;
         return err("اسم المستخدم غير صحيح", 400, origin);
       }
+      let row = null;
       try {
-        const rows = await db(`/users?username=eq.${encodeURIComponent(username)}&select=email,is_active&limit=1`);
-        await minDelay;
-        if (rows?.length && rows[0].is_active && isEmail(rows[0].email)) {
-          return ok({ email: rows[0].email }, origin);
-        }
-      } catch { /* fall through */ }
+        const rows = await db(
+          `/users?username=ilike.${encodeURIComponent(uname)}` +
+          `&select=email,is_active&limit=1`
+        );
+        row = rows?.[0] || null;
+      } catch {
+        try {
+          const rows = await db(
+            `/users?username=ilike.${encodeURIComponent(uname)}` +
+            `&select=email&limit=1`
+          );
+          row = rows?.[0] || null;
+        } catch { row = null; }
+      }
       await minDelay;
+      if (row && row.is_active !== false && isEmail(row.email)) {
+        return ok({ email: row.email }, origin);
+      }
       // Generic 401 — same message for "not found" and any other failure
       return err("اسم المستخدم أو كلمة المرور غير صحيحة", 401, origin);
     }
