@@ -1,7 +1,7 @@
 # 🔒 تقرير الإصلاحات الأمنية — GAS Internal Tickets
 
 **التاريخ:** 28 أبريل 2026
-**النسخة:** v4.4 (Hardened + Robust Auth + No-env-var Fallback)
+**النسخة:** v4.5 (Robust Auth + Active Sessions Triple-Fallback)
 **الحالة:** كل المشاكل المعروفة مُصلّحة + لا يحتاج `SUPABASE_ANON_KEY` كـ env var
 
 ---
