@@ -1,8 +1,8 @@
 // ═══════════════════════════════════════════════════════
-// GAS Internal Tickets — Service Worker v1.1
+// GAS Internal Tickets — Service Worker v1.0
 // ═══════════════════════════════════════════════════════
 
-const CACHE_NAME   = 'gas-portal-v1.2';
+const CACHE_NAME   = 'gas-portal-v1';
 const OFFLINE_URL  = '/offline.html';
 
 // الملفات اللي هتتحفظ في الـ cache
@@ -11,7 +11,6 @@ const STATIC_ASSETS = [
   '/index.html',
   '/app.js',
   '/manifest.json',
-  '/offline.html',
   'https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Tajawal:wght@300;400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap',
 ];
 
@@ -39,23 +38,18 @@ self.addEventListener('activate', event => {
 
 // ── Fetch Strategy ────────────────────────────────────────
 self.addEventListener('fetch', event => {
-  // GET requests فقط — POST/PUT/PATCH ما يتعمليش cache أبداً
-  if (event.request.method !== 'GET') return;
-
   const url = new URL(event.request.url);
 
-  // Supabase API + Netlify Functions — دايماً network (مش بنحفظه)
-  // مهم: مش بنرجّع JSON غريب من الـ SW؛ بنخلّي الـ app يتعامل مع الفشل
+  // Supabase API — دايماً network (مش بنحفظه)
   if (url.hostname.includes('supabase.co') ||
-      url.pathname.startsWith('/api/') ||
-      url.pathname.startsWith('/.netlify/')) {
+      url.pathname.startsWith('/api/')) {
     event.respondWith(
-      fetch(event.request).catch(() =>
-        new Response(
+      fetch(event.request).catch(() => {
+        return new Response(
           JSON.stringify({ error: 'No internet connection', offline: true }),
-          { status: 503, headers: { 'Content-Type': 'application/json; charset=utf-8' } }
-        )
-      )
+          { status: 503, headers: { 'Content-Type': 'application/json' } }
+        );
+      })
     );
     return;
   }
@@ -66,47 +60,24 @@ self.addEventListener('fetch', event => {
     event.respondWith(
       caches.match(event.request).then(cached =>
         cached || fetch(event.request).then(response => {
-          if (response && response.status === 200) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then(c => c.put(event.request, clone));
-          }
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(c => c.put(event.request, clone));
           return response;
-        }).catch(() => cached)
+        })
       )
     );
     return;
   }
 
-  // Navigation (HTML pages) — Network First, fallback to cache, then offline.html
+  // HTML / JS — Network First, Cache Fallback
   if (event.request.mode === 'navigate' ||
+      url.pathname.endsWith('.js') ||
       url.pathname.endsWith('.html')) {
     event.respondWith(
       fetch(event.request)
         .then(response => {
-          if (response && response.status === 200) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then(c => c.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() =>
-          caches.match(event.request).then(cached =>
-            cached || caches.match(OFFLINE_URL)
-          )
-        )
-    );
-    return;
-  }
-
-  // JS / CSS — Network First, Cache Fallback
-  if (url.pathname.endsWith('.js') || url.pathname.endsWith('.css')) {
-    event.respondWith(
-      fetch(event.request)
-        .then(response => {
-          if (response && response.status === 200) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then(c => c.put(event.request, clone));
-          }
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(c => c.put(event.request, clone));
           return response;
         })
         .catch(() => caches.match(event.request))
@@ -117,7 +88,7 @@ self.addEventListener('fetch', event => {
   // كل حاجة تانية — Cache First, Network Fallback
   event.respondWith(
     caches.match(event.request).then(cached =>
-      cached || fetch(event.request).catch(() => cached)
+      cached || fetch(event.request)
     )
   );
 });
@@ -165,9 +136,4 @@ self.addEventListener('notificationclick', event => {
         return clients.openWindow(url);
       })
   );
-});
-
-// ── Allow page to trigger SW update ───────────────────────
-self.addEventListener('message', event => {
-  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });

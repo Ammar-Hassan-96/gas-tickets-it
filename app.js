@@ -86,10 +86,6 @@ const _supa = (() => {
         const data = await res.json();
         _session = data;
         localStorage.setItem(CFG.sessionKey, JSON.stringify(data));
-        // Keep S.token in sync — every server-side action (auth.mjs heartbeat,
-        // delete_user, change_password, …) sends S.token explicitly. If we
-        // don't refresh it here, those calls keep using a stale JWT and fail.
-        if (typeof S !== 'undefined') S.token = data.access_token;
         return data;
       } catch { return null; }
     },
@@ -120,7 +116,7 @@ const S = {
   editUserId: null,
   // Separate filter state per page to avoid cross-contamination
   myFilter:  { status: '', search: '' },
-  allFilter: { status: '', priority: '', search: '', date: '', department: '' },
+  allFilter: { status: '', priority: '', search: '' },
 };
 
 // ── HELPERS ──────────────────────────────────────────────
@@ -488,11 +484,11 @@ function applyTheme(theme, save=true) {
   document.documentElement.setAttribute('data-theme', theme);
   if (save) {
     localStorage.setItem(CFG.themeKey, theme);
-    // Persist to server if logged in — v4.0: token-authenticated
-    if (S.user && S.token) {
+    // Persist to server if logged in
+    if (S.user) {
       fetch(CFG.authEndpoint, {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ action:'save_theme', token:S.token, theme })
+        body: JSON.stringify({ action:'save_theme', user_id:S.user.id, theme })
       }).catch(()=>{});
     }
   }
@@ -585,59 +581,35 @@ async function doLogin() {
   $('loginErr').style.display = 'none';
 
   try {
-    // v4.3: نستخدم الـ action الموحّد login_with_username — السيرفر بيعمل
-    // username→email lookup + password grant في request واحد. الكلاينت أبداً
-    // ما يشوفش الإيميل (مينع user enumeration). لو السيرفر مش متاح، نرجع
-    // للسلوك القديم (resolve_username + signIn مباشرة).
-    let session = null;
-    try {
+    // v3.3: الـ username→email lookup يتم على السيرفر فقط
+    // الـ client ما بيشوفش الـ email ولا يعرف لو المستخدم موجود أصلاً
+    let email = usernameOrEmail;
+    if (!usernameOrEmail.includes('@')) {
+      // نبعت الـ username للـ Netlify Function تجيب الـ email بـ service_role
+      // بكده الـ anon key ما يقدرش يعمل enumerate للـ users
       const res = await fetch(CFG.authEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'login_with_username',
-          username: usernameOrEmail,
-          password,
-        })
+        body: JSON.stringify({ action: 'resolve_username', username: usernameOrEmail })
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.access_token) session = data;
-      } else if (res.status === 401) {
-        // 401 = خطأ في بيانات الدخول — نوقف فوراً ولا نرجع للـ fallback
+      const data = await res.json();
+      // مهم: نفس الـ error للـ username غير الموجود وكلمة السر الغلط
+      // عشان ما نكشفش معلومات عن وجود المستخدم
+      if (!res.ok || !data.email) {
         throw new Error('اسم المستخدم أو كلمة المرور غير صحيحة');
       }
-      // أي status تاني (404 / 500 / network) → نسقط للـ fallback تحت
-    } catch (e) {
-      // لو الخطأ هو 401 اللي رميناه فوق، نمرّره
-      if (e.message === 'اسم المستخدم أو كلمة المرور غير صحيحة') throw e;
-      session = null;
+      email = data.email;
     }
 
-    // Fallback: 2-step (نفس السلوك القديم) — مفيد لو الـ Netlify Function
-    // لسه ما اتنشرتش بنسخة v4.0
-    if (!session) {
-      let email = usernameOrEmail;
-      if (!usernameOrEmail.includes('@')) {
-        const res = await fetch(CFG.authEndpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'resolve_username', username: usernameOrEmail })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.email) {
-          throw new Error('اسم المستخدم أو كلمة المرور غير صحيحة');
-        }
-        email = data.email;
-      }
-      session = await _supa.signIn(email, password);
-    }
+    // تسجيل الدخول عبر Supabase Auth
+    const session = await _supa.signIn(email, password);
 
     // حفظ الـ session
     localStorage.setItem(CFG.sessionKey, JSON.stringify(session));
     _supa.setSession(session);
 
     // جلب بيانات المستخدم من public.users
+    const userMeta = _supa.getUserMeta();
     const authUid  = session.user.id;
 
     // جلب كامل بيانات المستخدم من public.users بـ JWT
@@ -711,6 +683,15 @@ function doLogout() {
   if (S._slaCheck)  { clearInterval(S._slaCheck);  S._slaCheck  = null; }
   if (S._polling)   { clearInterval(S._polling);   S._polling   = null; }
 
+  // مسح last_seen عند تسجيل الخروج عشان ما يظهرش كـ "متصل"
+  if (S.user?.id) {
+    sbFetch(`/users?id=eq.${S.user.id}`, {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ last_seen: null })
+    }).catch(() => {});
+  }
+
   // تسجيل خروج من Supabase Auth
   _supa.signOut().catch(() => {});
 
@@ -743,27 +724,38 @@ async function bootApp() {
   refreshNavCounts();
   showPage('dashboard');
 
-  // Heartbeat — كل 3 دقايق نعمل حاجتين:
-  //  1. نـ refresh الـ JWT لو قرب ينتهي
-  //  2. نبعت heartbeat للسيرفر عشان نـ update last_seen
-  //     ده بيخلّي لوحة "الجلسات النشطة" تعرض المستخدمين المتصلين فعلاً
+  // Heartbeat — كل 3 دقائق:
+  // 1) refresh الـ JWT لو قرب ينتهي
+  // 2) تحديث last_seen في DB عشان تشتغل الجلسات النشطة في الـ Dashboard
   if (S._heartbeat) clearInterval(S._heartbeat);
-  const sendHeartbeat = async () => {
+
+  // تحديث فوري عند بدء الجلسة
+  if (S.user?.id) {
+    sbFetch(`/users?id=eq.${S.user.id}`, {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ last_seen: new Date().toISOString() })
+    }).catch(() => {});
+  }
+
+  S._heartbeat = setInterval(async () => {
     const session = _supa.getSession();
     if (!session) return;
-    // 1. JWT refresh لو قرب ينتهي (خلال 5 دقايق)
+
+    // Refresh الـ JWT لو هينتهي خلال 5 دقائق
     if (session.expires_at && Date.now() / 1000 > session.expires_at - 300) {
       await _supa.refreshSession(session.refresh_token);
     }
-    // 2. ping السيرفر — silent، مفيش error handling لازم
-    fetch(CFG.authEndpoint, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'heartbeat', token:S.token })
-    }).catch(()=>{});
-  };
-  // أول heartbeat فوراً عشان المستخدم يبان online من أول ثانية
-  sendHeartbeat();
-  S._heartbeat = setInterval(sendHeartbeat, 3 * 60 * 1000);
+
+    // تحديث last_seen عشان تظهر في الجلسات النشطة
+    if (S.user?.id) {
+      sbFetch(`/users?id=eq.${S.user.id}`, {
+        method: 'PATCH',
+        headers: { 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ last_seen: new Date().toISOString() })
+      }).catch(() => {});
+    }
+  }, 3 * 60 * 1000);
 
   // SLA Check — كل 30 دقيقة تبعت تنبيه للـ admin لو تيكت اقترب من الانتهاء
   if (S._slaCheck) clearInterval(S._slaCheck);
@@ -1202,7 +1194,7 @@ function renderDashCharts(tickets) {
               <td>${assignedCell}</td>
               <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
             </tr>`;
-          }).join('') : `<tr><td colspan="${showCreator?9:7}"><div class="empty-state"><p>لا توجد تيكتات بعد</p></div></td></tr>`}
+          }).join('') : `<tr><td colspan="${showCreator?10:8}"><div class="empty-state"><p>لا توجد تيكتات بعد</p></div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -1236,13 +1228,7 @@ function filterMyByStatus(v) {
 function applyMyFilter(list) {
   let r = list;
   if (S.myFilter.status) r = r.filter(t=>t.status===S.myFilter.status);
-  if (S.myFilter.search) {
-    const q = S.myFilter.search.toLowerCase();
-    r = r.filter(t =>
-      (t.title || '').toLowerCase().includes(q) ||
-      (t.ticket_number || '').toLowerCase().includes(q)
-    );
-  }
+  if (S.myFilter.search) r = r.filter(t=>t.title.includes(S.myFilter.search)||t.ticket_number.includes(S.myFilter.search));
   return r;
 }
 
@@ -1328,14 +1314,7 @@ function applyAllFilter(list) {
   if (S.allFilter.status)     r = r.filter(t=>t.status===S.allFilter.status);
   if (S.allFilter.priority)   r = r.filter(t=>t.priority===S.allFilter.priority);
   if (S.allFilter.department) r = r.filter(t=>(t.target_department||'')===S.allFilter.department);
-  if (S.allFilter.search) {
-    const q = S.allFilter.search.toLowerCase();
-    r = r.filter(t =>
-      (t.title || '').toLowerCase().includes(q) ||
-      (t.ticket_number || '').toLowerCase().includes(q) ||
-      (uname(t.created_by) || '').toLowerCase().includes(q)
-    );
-  }
+  if (S.allFilter.search)     r = r.filter(t=>t.title.includes(S.allFilter.search)||t.ticket_number.includes(S.allFilter.search)||uname(t.created_by).includes(S.allFilter.search));
   if (S.allFilter.date) {
     const now = Date.now();
     const ms  = { today: 86400000, week: 604800000, month: 2592000000 }[S.allFilter.date];
@@ -1809,20 +1788,10 @@ async function saveTicketUpdate() {
   const prevStatus   = t.status;
   const prevAssigned = t.assigned_to;
 
-  // عند تحويل الحالة لـ closed نسجل closed_at — التقارير (متوسط زمن الحل،
-  // التزام SLA) بتعتمد عليه. لو الحالة رجعت من closed لحالة شغّالة تاني،
-  // نمسحه عشان الحساب يفضل صح.
-  const nowIso = new Date().toISOString();
-  const wasClosed = ['closed','resolved','archived'].includes(prevStatus);
-  const isClosed  = ['closed','archived'].includes(newStatus);
-  const patch = { status:newStatus, assigned_to:newAssigned, updated_at: nowIso };
-  if (isClosed && !wasClosed)        patch.closed_at = nowIso;
-  else if (!isClosed && wasClosed)   patch.closed_at = null;
-
   try {
     await sbFetch(`/tickets?id=eq.${t.id}`, {
       method:'PATCH',
-      body: JSON.stringify(patch)
+      body: JSON.stringify({ status:newStatus, assigned_to:newAssigned, updated_at:new Date().toISOString() })
     });
 
     if (note) {
@@ -1839,7 +1808,6 @@ async function saveTicketUpdate() {
 
     t.status      = newStatus;
     t.assigned_to = newAssigned;
-    if ('closed_at' in patch) t.closed_at = patch.closed_at;
 
     // ── إشعار صاحب التيكت عند تغيير الحالة ──
     if (newStatus !== prevStatus && t.created_by && t.created_by !== S.user.id) {
@@ -1940,7 +1908,10 @@ async function addComment(ticketId) {
         title: `رد جديد على تيكتك: ${t.title}`,
         body: `${S.user.name}: ${text.slice(0, 60)}${text.length > 60 ? '...' : ''}`,
         is_read: false
-      })}).catch(() => {});
+      })}).then(() => {
+      }).catch(e => {
+      });
+    } else {
     }
 
     openTicketDetail(ticketId);
@@ -2117,12 +2088,7 @@ async function uploadOneAttachment(att, ticketNumber) {
   const ext = (att.name.match(/\.[a-zA-Z0-9]+$/) || [''])[0];
   const safeBase = att.name.replace(ext,'')
     .replace(/[^a-zA-Z0-9\u0600-\u06FF_-]+/g,'_').slice(0, 50) || 'file';
-  // لو لسه ما عندناش ticket_number (المرفقات بترفع قبل إنشاء التيكت)
-  // نولّد prefix فريد بدل ما كل المرفقات تتكدّس في فولدر "ticket/" واحد
-  // وتدوس على بعض. random + timestamp = no collisions.
-  const folder = ticketNumber
-    || `pending/${(crypto?.randomUUID?.() || Math.random().toString(36).slice(2)).slice(0,8)}`;
-  const path = `${folder}/${Date.now()}_${safeBase}${ext}`;
+  const path = `${ticketNumber || 'ticket'}/${Date.now()}_${safeBase}${ext}`;
 
   const url = `${CFG.supabaseUrl}/storage/v1/object/ticket-attachments/${encodeURIComponent(path)}`;
   att.progress = 40; renderPendingAttachments();
@@ -2369,18 +2335,18 @@ function openNewUserModal() {
   ['nu_name','nu_uname','nu_email','nu_pass','nu_phone'].forEach(id=>$(id).value='');
   $('nu_role').value   = 'employee';
   $('nu_active').value = 'true';
-  // ننتظر تحميل الدروب داون أولاً، بعدين نقفله للمدير — كده ما فيش race
-  // condition بين الـ setTimeout وعملية الـ populate الفعلية
-  populateUserDeptDropdown('').then(() => {
+  populateUserDeptDropdown('');  // async — بس مش محتاج await هنا (الـ modal لسه بيفتح)
+  // Pre-lock the department for dept managers (they can only create users in their own dept)
+  if (Perm.isManager() && !Perm.isSuper()) {
+    // ننتظر لحظة صغيرة لتأمين تحميل الدروب داون قبل ما نقفله
+    setTimeout(() => {
+      const sel = $('nu_dept');
+      if (sel) { sel.value = Perm.myDept(); sel.disabled = true; }
+    }, 50);
+  } else {
     const sel = $('nu_dept');
-    if (!sel) return;
-    if (Perm.isManager() && !Perm.isSuper()) {
-      sel.value = Perm.myDept();
-      sel.disabled = true;
-    } else {
-      sel.disabled = false;
-    }
-  });
+    if (sel) sel.disabled = false;
+  }
   openModal('newUserModal');
 }
 
@@ -2396,10 +2362,11 @@ function editUser(id) {
   $('nu_email').value  = u.email||'';
   $('nu_pass').value   = '';
   $('nu_role').value   = u.role;
-  populateUserDeptDropdown(u.department||'').then(() => {
+  populateUserDeptDropdown(u.department||'');
+  setTimeout(() => {
     const sel = $('nu_dept');
     if (sel) sel.disabled = Perm.isManager() && !Perm.isSuper();
-  });
+  }, 50);
   $('nu_phone').value  = u.phone||'';
   $('nu_active').value = String(u.is_active!==false);
   openModal('newUserModal');
@@ -2419,14 +2386,8 @@ async function saveUser() {
   if (role !== 'super_admin' && !dept) { toast('يجب اختيار الإدارة لهذا الدور','error'); return; }
   if (!email) { toast('البريد الإلكتروني مطلوب لتسجيل الدخول','error'); return; }
   if (!S.editUserId && !pass) { toast('كلمة المرور مطلوبة لمستخدم جديد','error'); return; }
-  // السيرفر بيفرض 10 أحرف + حرف + رقم. نطابق الكلاينت عشان ما نديش 400 بعد ما المستخدم يضغط حفظ.
-  const _passRule = p => {
-    if (p.length < 10) return 'كلمة المرور يجب أن تكون 10 أحرف على الأقل';
-    if (!/[A-Za-z]/.test(p) || !/\d/.test(p)) return 'كلمة المرور يجب أن تحتوي على حروف وأرقام';
-    return null;
-  };
-  if (!S.editUserId) { const e = _passRule(pass); if (e) { toast('⚠️ ' + e,'error'); return; } }
-  if (pass && pass.length > 0) { const e = _passRule(pass); if (e) { toast('⚠️ ' + e,'error'); return; } }
+  if (!S.editUserId && pass.length < 8) { toast('⚠️ كلمة المرور يجب أن تكون 8 أحرف على الأقل','error'); return; }
+  if (pass && pass.length > 0 && pass.length < 8) { toast('⚠️ كلمة المرور يجب أن تكون 8 أحرف على الأقل','error'); return; }
 
   const PROTECTED = ['ammar.admin'];
   if (S.editUserId) {
@@ -2447,17 +2408,15 @@ async function saveUser() {
       // 1) تحديث public.users
       await sbFetch(`/users?id=eq.${S.editUserId}`,{method:'PATCH',body:JSON.stringify(payload)});
 
-      // 2) تحديث auth.users عبر Netlify Function — السيرفر بيتوقع
-      // user_metadata: { role, department, name } و password (مش new_password)
+      // 2) تحديث auth.users عبر Netlify Function
       const res = await fetch(CFG.authEndpoint, {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
-          action:  'update_auth_user',
-          token:   S.token,
+          action: 'update_auth_user',
+          token:  S.token,
           user_id: S.editUserId,
-          email,
-          user_metadata: { role, department: dept, name, username: uname },
-          ...(pass ? { password: pass } : {}),
+          email, role, department: dept, name, username: uname,
+          ...(pass ? { new_password: pass } : {})
         })
       });
       const data = await res.json();
@@ -2473,29 +2432,26 @@ async function saveUser() {
   } else {
     // ── إضافة مستخدم جديد ───────────────────────────────
     if (!pass) { toast('كلمة المرور مطلوبة','error'); return; }
-    { const e = _passRule(pass); if (e) { toast(e, 'error'); return; } }
+    if (pass.length < 8) { toast('كلمة المرور لازم تكون 8 أحرف على الأقل','error'); return; }
     if (S.users.find(u=>u.username===uname)) { toast('اسم المستخدم موجود بالفعل','error'); return; }
     if (S.users.find(u=>u.email===email)) { toast('البريد الإلكتروني مستخدم بالفعل','error'); return; }
 
     try {
-      // Step 1: إنشاء في Supabase Auth عبر Netlify Function — السيرفر بيتوقع
-      // user_metadata بدل ما نبعت كل field على حدة
+      // Step 1: إنشاء في Supabase Auth عبر Netlify Function
+      // الـ Netlify Function بتستخدم service_role key وبترجع auth_id
       const authRes = await fetch(CFG.authEndpoint, {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
           action: 'create_auth_user',
           token: S.token,
-          email,
-          password: pass,
-          user_metadata: { name, username: uname, role, department: dept },
+          email, password: pass, name, username: uname,
+          role, department: dept,
         })
       });
       const authData = await authRes.json();
       if (!authRes.ok) throw new Error(authData.error || 'فشل إنشاء حساب الدخول');
 
-      // السيرفر بيرجع { user: <admin api response> } — الـ id جوّا user
-      const authId = authData?.user?.id || authData?.user?.user?.id
-                  || authData.auth_id || authData.user_id;
+      const authId = authData.auth_id || authData.user_id;
       if (!authId) throw new Error('لم يتم الحصول على معرف المستخدم');
 
       // Step 2: تأكد إن الـ Trigger خلق الصف في public.users
@@ -2510,25 +2466,21 @@ async function saveUser() {
         retries--;
       }
 
-      // لو الـ Trigger ما خلقوش، نخلقه يدوياً عبر Netlify — السيرفر بيتوقع
-      // profile: {...} بـ id (مش auth_id flat)
+      // لو الـ Trigger ما خلقوش، نخلقه يدوياً عبر Netlify
       if (!saved) {
         const profileRes = await fetch(CFG.authEndpoint, {
           method:'POST', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({
             action: 'create_user_profile',
-            token:  S.token,
-            profile: {
-              id: authId,
-              name, username: uname, email,
-              role, department: dept, phone: phone||null,
-              is_active: true,
-            },
+            token: S.token,
+            auth_id: authId,
+            name, username: uname, email,
+            role, department: dept, phone: phone||null,
           })
         });
         const profileData = await profileRes.json();
         if (!profileRes.ok) throw new Error(profileData.error || 'فشل إنشاء الملف الشخصي');
-        saved = profileData.profile || profileData.user;
+        saved = profileData.user;
       } else {
         // الـ Trigger خلق الصف لكن ممكن يكون ناقصه username/role/dept
         // نحدثه بالبيانات الكاملة
@@ -2553,7 +2505,7 @@ async function saveUser() {
       } else if (msg.includes('email_exists') || msg.includes('email address has already been registered')) {
         toast('⚠️ هذا البريد الإلكتروني مسجل مسبقاً — اختر بريداً آخر', 'error');
       } else if (msg.includes('weak_password') || msg.includes('too short')) {
-        toast('⚠️ كلمة المرور ضعيفة — يجب أن تكون 10 أحرف على الأقل وتحتوي على حروف وأرقام', 'error');
+        toast('⚠️ كلمة المرور ضعيفة — يجب أن تكون 6 أحرف على الأقل', 'error');
       } else if (msg.includes('invalid_email') || msg.includes('invalid email')) {
         toast('⚠️ البريد الإلكتروني غير صحيح', 'error');
       } else {
@@ -2601,7 +2553,7 @@ function resetUserPassword(userId, userName) {
         </div>
         <div class="modal-bd">
           <div class="fg">
-            <label class="fl">كلمة المرور الجديدة (10 أحرف على الأقل، حروف وأرقام)</label>
+            <label class="fl">كلمة المرور الجديدة (6 أحرف على الأقل)</label>
             <input type="password" class="fi" id="resetPwdInput" placeholder="••••••••">
           </div>
         </div>
@@ -2623,10 +2575,7 @@ async function doResetUserPassword() {
   if (!userId) return;
   const newPass = document.getElementById('resetPwdInput').value;
   if (!newPass) return;
-  if (newPass.length < 10) { toast('كلمة المرور لازم تكون 10 أحرف على الأقل', 'error'); return; }
-  if (!/[A-Za-z]/.test(newPass) || !/\d/.test(newPass)) {
-    toast('كلمة المرور لازم تحتوي على حروف وأرقام', 'error'); return;
-  }
+  if (newPass.length < 6) { toast('كلمة المرور لازم تكون 6 أحرف على الأقل', 'error'); return; }
   closeModal('resetPwdModal');
   try {
     const res = await fetch(CFG.authEndpoint, {
@@ -3195,7 +3144,7 @@ function renderProfile() {
           <input type="password" class="fi" id="cp_old" placeholder="••••••••">
         </div>
         <div>
-          <label class="fl">الجديدة (10 أحرف + أرقام كحد أدنى)</label>
+          <label class="fl">الجديدة (6 أحرف كحد أدنى)</label>
           <input type="password" class="fi" id="cp_new" placeholder="••••••••">
         </div>
       </div>
@@ -3211,11 +3160,7 @@ async function changePassword() {
   const oldPass = $('cp_old')?.value || '';
   const newPass = $('cp_new')?.value || '';
   if (!oldPass || !newPass) { toast('أدخل كلمة المرور الحالية والجديدة', 'error'); return; }
-  if (newPass.length < 10) { toast('كلمة المرور الجديدة لازم تكون 10 أحرف على الأقل', 'error'); return; }
-  if (!/[A-Za-z]/.test(newPass) || !/\d/.test(newPass)) {
-    toast('كلمة المرور لازم تحتوي على حروف وأرقام', 'error'); return;
-  }
-  if (oldPass === newPass) { toast('كلمة المرور الجديدة لازم تكون مختلفة', 'error'); return; }
+  if (newPass.length < 6) { toast('كلمة المرور الجديدة لازم تكون 6 أحرف على الأقل', 'error'); return; }
   try {
     const res = await fetch(CFG.authEndpoint, {
       method: 'POST',
@@ -3234,9 +3179,7 @@ async function changePassword() {
 // ═══════════════════════════════════════════════════════
 function playNotifSound() {
   try {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return;
-    const ctx = new Ctx();
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -3247,22 +3190,16 @@ function playNotifSound() {
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + 0.3);
-    // قفل الـ AudioContext بعد ما الصوت يخلص — لو سبناه مفتوح
-    // كل إشعار بيـ leak resource والمتصفح في النهاية بيرفض إنشاء جداد
-    osc.onended = () => { ctx.close().catch(() => {}); };
   } catch { /* مش كل المتصفحات بتدعم AudioContext */ }
 }
 
 function renderNotifPanel() {
-  // Deduplicate: نفس الـ title + body في خلال 5 ثواني يتعامل كـ duplicate
-  // (مينع الإشعارات المكررة من الـ retries مثلاً) — قبل كده كنا بنشيل أي
-  // إشعارين بنفس العنوان في خلال دقيقة، اللي بيخفي رسائل مشروعة
+  // Deduplicate: if same title sent within 60s, show only first occurrence
   const seen = new Map();
   const deduped = S.notifs.filter(n => {
-    const key = `${n.title || ''}|${n.body || ''}`;
     const t = new Date(n.created_at).getTime();
-    if (seen.has(key) && Math.abs(t - seen.get(key)) < 5000) return false;
-    seen.set(key, t);
+    if (seen.has(n.title) && Math.abs(t - seen.get(n.title)) < 60000) return false;
+    seen.set(n.title, t);
     return true;
   });
 
@@ -3362,9 +3299,7 @@ async function deleteAllNotifs() {
 document.addEventListener('click',e=>{
   const panel = $('notifPanel');
   const btn   = $('notifBtn');
-  // null-check للـ btn — في صفحات الـ login مفيش notifBtn في الـ DOM،
-  // وبالتالي !btn.contains كان بيرمي TypeError
-  if (panel && btn && !panel.contains(e.target) && !btn.contains(e.target)) {
+  if (panel&&!panel.contains(e.target)&&!btn.contains(e.target)) {
     panel.classList.remove('on');
   }
 });
@@ -3654,7 +3589,7 @@ async function renderDeptMap() {
             </div>
 
             <div class="map-add-row">
-              <input class="fi" id="${deptInputId(d)}" placeholder="نوع طلب جديد لـ ${_e(d)}">
+              <input class="fi" id="newType_${btoa(unescape(encodeURIComponent(d))).replace(/=/g,'')}" placeholder="نوع طلب جديد لـ ${_e(d)}">
               <button class="btn btn-gold" onclick="addRequestType('${_e(d)}')">+ إضافة نوع</button>
             </div>
           </div>`;
@@ -3663,21 +3598,7 @@ async function renderDeptMap() {
   `;
 }
 
-// btoa لازمها bytes (latin-1)؛ unescape() deprecated ومش متاحة في كل البيئات.
-// بنحوّل النص لـ UTF-8 bytes الأول، بعدين base64.
-function deptInputId(dept) {
-  try {
-    const bytes = new TextEncoder().encode(dept);
-    let bin = '';
-    for (const b of bytes) bin += String.fromCharCode(b);
-    return 'newType_' + btoa(bin).replace(/[^A-Za-z0-9]/g, '');
-  } catch {
-    // Fallback آمن — hash بسيط لو TextEncoder مش متاح (متصفحات قديمة جداً)
-    let h = 0;
-    for (let i = 0; i < dept.length; i++) h = ((h << 5) - h + dept.charCodeAt(i)) | 0;
-    return 'newType_' + Math.abs(h).toString(36);
-  }
-}
+function deptInputId(dept){ return 'newType_'+btoa(unescape(encodeURIComponent(dept))).replace(/=/g,''); }
 
 async function addDepartment() {
   const name = ($('newDeptName')?.value || '').trim();
@@ -3777,13 +3698,8 @@ function renderArchive() {
 
 function filterArchive(q) {
   const archived = S.tickets.filter(t=>t.status==='archived');
-  const ql = (q || '').toLowerCase();
-  const filtered = ql
-    ? archived.filter(t =>
-        (t.title || '').toLowerCase().includes(ql) ||
-        (t.ticket_number || '').toLowerCase().includes(ql) ||
-        (uname(t.created_by) || '').toLowerCase().includes(ql)
-      )
+  const filtered = q
+    ? archived.filter(t=>t.title.includes(q)||t.ticket_number.includes(q)||uname(t.created_by).includes(q))
     : archived;
   const tbody = $('archiveTbody');
   if (!tbody) return;

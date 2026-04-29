@@ -1,6 +1,6 @@
 [build]
   publish = "."
-
+  
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
@@ -9,57 +9,28 @@
 [functions]
   node_bundler = "esbuild"
 
-# ═══════════════════════════════════════════════════════════════
 # Security Headers — كل الصفحات
-# ═══════════════════════════════════════════════════════════════
 [[headers]]
   for = "/*"
   [headers.values]
-    # منع الـ clickjacking
     X-Frame-Options = "DENY"
-    # منع المتصفح من تخمين الـ MIME type
     X-Content-Type-Options = "nosniff"
-    # Referrer minimal
+    X-XSS-Protection = "1; mode=block"
     Referrer-Policy = "strict-origin-when-cross-origin"
-    # تعطيل صلاحيات حساسة افتراضياً
-    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
-    # HTTPS فقط لمدة سنة + sub-domains
-    Strict-Transport-Security = "max-age=31536000; includeSubDomains; preload"
-    # Cross-origin isolation
-    Cross-Origin-Opener-Policy = "same-origin"
-    Cross-Origin-Resource-Policy = "same-origin"
-    # Content Security Policy — يسمح فقط للمصادر الموثوقة
-    # ملاحظة: 'unsafe-inline' ضروري لأن index.html فيه inline <style> و event handlers (onclick="...")
-    # لو هتشيل الـ inline handlers مستقبلاً، اشيل 'unsafe-inline' من script-src
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://rmlkhgktwologfhphtyz.supabase.co; connect-src 'self' https://rmlkhgktwologfhphtyz.supabase.co https://fonts.googleapis.com https://fonts.gstatic.com; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
 
-# ═══════════════════════════════════════════════════════════════
 # Service Worker — لازم يكون بدون cache
-# ═══════════════════════════════════════════════════════════════
 [[headers]]
   for = "/sw.js"
   [headers.values]
     Cache-Control = "no-cache, no-store, must-revalidate"
     Service-Worker-Allowed = "/"
 
-# ═══════════════════════════════════════════════════════════════
 # Manifest
-# ═══════════════════════════════════════════════════════════════
 [[headers]]
   for = "/manifest.json"
   [headers.values]
     Cache-Control = "public, max-age=86400"
     Content-Type = "application/manifest+json"
 
-# ═══════════════════════════════════════════════════════════════
-# index.html — لا يخزّن (عشان أي تحديث كود يوصل فوراً)
-# ═══════════════════════════════════════════════════════════════
-[[headers]]
-  for = "/"
-  [headers.values]
-    Cache-Control = "no-cache, no-store, must-revalidate"
 
-[[headers]]
-  for = "/index.html"
-  [headers.values]
-    Cache-Control = "no-cache, no-store, must-revalidate"
