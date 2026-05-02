@@ -2991,10 +2991,20 @@ async function renderAuditLog() {
   if (!Perm.isSuper()) { showPage('dashboard'); return; }
 
   const ACTION_LABELS = {
-    delete_user:   '🗑️ حذف مستخدم',
-    delete_ticket: '🗑️ حذف تيكت',
-    update_user:   '✏️ تعديل مستخدم',
-    reset_audit_log: '🔄 مسح سجل العمليات',
+    // Server-side (auth.mjs) — UPPERCASE
+    DELETE_USER:          '🗑️ حذف مستخدم',
+    DELETE_TICKET:        '🗑️ حذف تيكت',
+    CREATE_USER:          '➕ إنشاء مستخدم',
+    CREATE_USER_PROFILE:  '➕ إنشاء بروفايل مستخدم',
+    UPDATE_USER:          '✏️ تعديل مستخدم',
+    RESET_PASSWORD:       '🔑 إعادة تعيين كلمة المرور',
+    CHANGE_PASSWORD:      '🔐 تغيير كلمة المرور',
+    RESET_ALL_TICKETS:    '🔄 إعادة تعيين كل التيكتات',
+    // Legacy lower-case (kept for backward compatibility)
+    delete_user:          '🗑️ حذف مستخدم',
+    delete_ticket:        '🗑️ حذف تيكت',
+    update_user:          '✏️ تعديل مستخدم',
+    reset_audit_log:      '🔄 مسح سجل العمليات',
   };
 
   // Show page with buttons immediately
