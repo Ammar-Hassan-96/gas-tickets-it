@@ -162,7 +162,7 @@ async function verifyToken(token) {
 async function getProfile(authId) {
   if (!isUUID(authId)) return null;
   try {
-    const rows = await db(`/users?id=eq.${encodeURIComponent(authId)}&select=id,role,department,is_active,username,email&limit=1`);
+    const rows = await db(`/users?id=eq.${encodeURIComponent(authId)}&select=id,name,role,department,is_active,username,email&limit=1`);
     return rows?.[0] || null;
   } catch { return null; }
 }
@@ -198,6 +198,30 @@ async function countSuperAdmins(excludeId = null) {
     : `?role=eq.super_admin&is_active=eq.true&select=id`;
   const rows = await db(`/users${filter}`);
   return Array.isArray(rows) ? rows.length : 0;
+}
+
+// ─── Audit log helper ──────────────────────────────────────────
+// Best-effort: never fails the parent action if audit logging breaks.
+// Records every sensitive admin operation in public.audit_logs.
+async function logAudit(actor, action, target_type, target_id, target_name, meta = null) {
+  try {
+    await db("/audit_logs", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        user_id:     actor?.id || null,
+        user_name:   actor?.name || actor?.username || actor?.email || "system",
+        user_role:   actor?.role || "system",
+        action:      String(action || "UNKNOWN"),
+        target_type: String(target_type || "unknown"),
+        target_id:   target_id ? String(target_id) : "unknown",
+        target_name: String(target_name || "unknown"),
+        metadata:    meta,
+      }),
+    });
+  } catch (e) {
+    console.error("[auth.mjs] audit log failed:", action, e?.message);
+  }
 }
 
 // ─── Handler ───────────────────────────────────────────────────
@@ -517,6 +541,7 @@ export default async (request) => {
         body: JSON.stringify({ password: new_password }),
       });
 
+      await logAudit(r.me, "CHANGE_PASSWORD", "user", r.au.id, r.me.username || r.me.email, { self: true });
       return ok({ success: true }, origin);
     }
 
@@ -590,6 +615,11 @@ export default async (request) => {
           user_metadata: meta,
         }),
       });
+      await logAudit(r.me, "CREATE_USER", "user", created?.id, meta.name || meta.username || email, {
+        email,
+        role: meta.role || "employee",
+        department: meta.department || null,
+      });
       return ok({ user: created }, origin);
     }
 
@@ -621,6 +651,10 @@ export default async (request) => {
         is_active:   profile.is_active !== false,
       };
       const inserted = await db("/users", { method: "POST", body: JSON.stringify(safe) });
+      await logAudit(r.me, "CREATE_USER_PROFILE", "user", profile.id, safe.name || safe.username || safe.email, {
+        role: safe.role,
+        department: safe.department,
+      });
       return ok({ profile: inserted?.[0] || inserted }, origin);
     }
 
@@ -702,6 +736,13 @@ export default async (request) => {
         }
       }
 
+      // Build a safe meta payload (don't log passwords)
+      const auditMeta = {};
+      if (payload.email)         auditMeta.email_changed    = true;
+      if (payload.password)      auditMeta.password_changed = true;
+      if (payload.user_metadata) auditMeta.metadata_changed = Object.keys(payload.user_metadata);
+      await logAudit(r.me, "UPDATE_USER", "user", user_id, target.username || target.email, auditMeta);
+
       return ok({ user: updated }, origin);
     }
 
@@ -731,6 +772,10 @@ export default async (request) => {
       await admin(`/admin/users/${encodeURIComponent(user_id)}`, {
         method: "PUT",
         body: JSON.stringify({ password: new_password }),
+      });
+      await logAudit(r.me, "RESET_PASSWORD", "user", user_id, target.username || target.email, {
+        target_role: target.role,
+        target_department: target.department,
       });
       return ok({ success: true }, origin);
     }
@@ -769,6 +814,10 @@ export default async (request) => {
         await db(`/users?id=eq.${encodeURIComponent(user_id)}`, { method: "DELETE" });
       } catch { /* row may already be cascaded */ }
 
+      await logAudit(r.me, "DELETE_USER", "user", user_id, target.username || target.email, {
+        target_role: target.role,
+        target_department: target.department,
+      });
       return ok({ success: true }, origin);
     }
 
@@ -784,6 +833,13 @@ export default async (request) => {
       // here — surface a warning if there are attachments so an admin can
       // reconcile manually instead of silently orphaning files.
       let attachCount = 0;
+      // Fetch ticket info BEFORE deleting (for audit trail)
+      let ticketInfo = null;
+      try {
+        const rows = await db(`/tickets?id=eq.${encodeURIComponent(ticket_id)}&select=ticket_number,title,target_department&limit=1`);
+        ticketInfo = rows?.[0] || null;
+      } catch { /* ignore */ }
+
       try {
         const att = await db(`/ticket_attachments?ticket_id=eq.${encodeURIComponent(ticket_id)}&select=id`);
         attachCount = Array.isArray(att) ? att.length : 0;
@@ -793,6 +849,20 @@ export default async (request) => {
       try { await db(`/ticket_attachments?ticket_id=eq.${encodeURIComponent(ticket_id)}`, { method: "DELETE" }); } catch {}
       try { await db(`/notifications?ticket_id=eq.${encodeURIComponent(ticket_id)}`,     { method: "DELETE" }); } catch {}
       await db(`/tickets?id=eq.${encodeURIComponent(ticket_id)}`, { method: "DELETE" });
+
+      await logAudit(
+        r.me,
+        "DELETE_TICKET",
+        "ticket",
+        ticket_id,
+        ticketInfo?.ticket_number || ticketInfo?.title || ticket_id,
+        {
+          ticket_number: ticketInfo?.ticket_number,
+          title: ticketInfo?.title,
+          target_department: ticketInfo?.target_department,
+          orphan_attachments: attachCount,
+        }
+      );
 
       return ok({ success: true, orphan_attachments: attachCount }, origin);
     }
