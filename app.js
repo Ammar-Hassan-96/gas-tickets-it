@@ -383,6 +383,13 @@ const pbadge = p => badge(PRIO_L[p]||p,   PRIO_C[p]||'b-med');
 const uname  = id => S.users.find(u=>u.id===id)?.name || null;
 const udept  = id => S.users.find(u=>u.id===id)?.department || '—';
 
+// Unified helpers — ALWAYS use these for ticket creator/assignee names.
+// Falls back through 3 sources: in-memory S.users → DB join (RLS-aware) → '—'
+const creatorName  = t => uname(t?.created_by)  || t?.creator_name  || '—';
+const creatorDept  = t => (S.users.find(u=>u.id===t?.created_by)?.department) || t?.creator_dept || '—';
+const assigneeName = t => t?.assigned_to ? (uname(t.assigned_to) || t?.assignee_name || '—') : 'غير معين';
+const assigneeDept = t => t?.assigned_to ? ((S.users.find(u=>u.id===t.assigned_to)?.department) || t?.assignee_dept || '—') : '—';
+
 // ── ATTACHMENT HELPERS ──────────────────────────────────
 const ATTACH_MAX_SIZE = 10 * 1024 * 1024;  // 10 MB
 const ATTACH_ICONS = {
@@ -815,12 +822,20 @@ function checkSLAAlerts() {
 
 async function loadTickets() {
   try {
-    S.tickets = await sbFetch('/tickets?select=*,comments:ticket_comments(*),creator:users!created_by(name,username,department)&order=created_at.desc') || [];
-    // إضافة creator_name و creator_dept كـ flat properties
+    S.tickets = await sbFetch(
+      '/tickets?select=*,comments:ticket_comments(*),' +
+      'creator:users!created_by(name,username,department),' +
+      'assignee:users!assigned_to(name,username,department)' +
+      '&order=created_at.desc'
+    ) || [];
+    // إضافة creator_name/creator_dept/assignee_name/assignee_dept كـ flat properties
+    // ده fallback لو RLS منعت الـ join (مش مفروض يحصل بعد policy users_select_via_ticket)
     S.tickets = S.tickets.map(t => ({
       ...t,
-      creator_name: t.creator?.name || null,
-      creator_dept: t.creator?.department || null,
+      creator_name:  t.creator?.name       || null,
+      creator_dept:  t.creator?.department || null,
+      assignee_name: t.assignee?.name      || null,
+      assignee_dept: t.assignee?.department|| null,
     }));
   } catch { S.tickets = []; }
 }
@@ -1174,13 +1189,13 @@ function renderDashCharts(tickets) {
               ? `<span class="reqtype-chip">${_e(t.request_type)}</span>`
               : '<span style="color:var(--text-muted);">—</span>';
             const assignedCell = t.assigned_to
-              ? `<span style="font-size:12px;">${_e(uname(t.assigned_to))}</span>`
+              ? `<span style="font-size:12px;">${_e(uname(t.assigned_to) || t.assignee_name || '—')}</span>`
               : '<span style="color:var(--text-muted);font-size:11px;">غير معين</span>';
             const attachTag = (t.attachments && t.attachments.length)
               ? `<span style="font-size:10px;color:var(--gold);margin-inline-start:6px;">📎 ${t.attachments.length}</span>` : '';
             const creatorCells = showCreator
-              ? `<td><strong style="font-size:12px;">${_e(uname(t.created_by)||t.creator_name||'—')}</strong></td>
-                 <td style="font-size:11px;color:var(--text-muted);">${_e(udept(t.created_by)||'—')}</td>`
+              ? `<td><strong style="font-size:12px;">${_e(creatorName(t))}</strong></td>
+                 <td style="font-size:11px;color:var(--text-muted);">${_e(creatorDept(t))}</td>`
               : '';
             return `
             <tr onclick="openTicketDetail('${t.id}')">
@@ -1314,7 +1329,7 @@ function applyAllFilter(list) {
   if (S.allFilter.status)     r = r.filter(t=>t.status===S.allFilter.status);
   if (S.allFilter.priority)   r = r.filter(t=>t.priority===S.allFilter.priority);
   if (S.allFilter.department) r = r.filter(t=>(t.target_department||'')===S.allFilter.department);
-  if (S.allFilter.search)     r = r.filter(t=>t.title.includes(S.allFilter.search)||t.ticket_number.includes(S.allFilter.search)||uname(t.created_by).includes(S.allFilter.search));
+  if (S.allFilter.search)     r = r.filter(t=>t.title.includes(S.allFilter.search)||t.ticket_number.includes(S.allFilter.search)||creatorName(t).includes(S.allFilter.search));
   if (S.allFilter.date) {
     const now = Date.now();
     const ms  = { today: 86400000, week: 604800000, month: 2592000000 }[S.allFilter.date];
@@ -1396,7 +1411,7 @@ function applyOutFilter(list) {
     r = r.filter(t =>
       (t.title||'').toLowerCase().includes(q) ||
       (t.ticket_number||'').toLowerCase().includes(q) ||
-      (uname(t.created_by)||'').toLowerCase().includes(q)
+      creatorName(t).toLowerCase().includes(q)
     );
   }
   return r;
@@ -1425,12 +1440,12 @@ function renderOutboundRows(tickets) {
       <td style="max-width:200px;">
         <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}${attachTag}</div>
       </td>
-      <td><strong>${_e(uname(t.created_by)||t.creator_name||'—')}</strong></td>
+      <td><strong>${_e(creatorName(t))}</strong></td>
       <td>${targetDept}</td>
       <td>${reqType}</td>
       <td>${pbadge(t.priority)}</td>
       <td>${sbadge(t.status)}</td>
-      <td>${_e(t.assigned_to ? uname(t.assigned_to) : 'غير معين')}</td>
+      <td>${_e(assigneeName(t))}</td>
       <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
     </tr>`;
   }).join('');
@@ -1468,14 +1483,14 @@ function renderTicketRows(tbodyId, tickets, isAdmin) {
         <td><span class="tnum">${_e(t.ticket_number)}</span></td>
         <td style="max-width:200px;">
           <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}${attachTag}</div>
-          <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${_e(udept(t.created_by)||'—')}</div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${_e(creatorDept(t))}</div>
         </td>
-        <td>${_e(uname(t.created_by)||t.creator_name||'—')}</td>
+        <td>${_e(creatorName(t))}</td>
         <td>${targetDept}</td>
         <td>${reqType}</td>
         <td>${pbadge(t.priority)}</td>
         <td>${sbadge(t.status)}</td>
-        <td>${_e(t.assigned_to ? uname(t.assigned_to) : '—')}</td>
+        <td>${_e(assigneeName(t))}</td>
         <td style="min-width:100px;">
           <div class="sla-bar"><div class="sla-fill ${sla.cls}" style="width:${sla.pct}%"></div></div>
           <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${sla.label}</div>
@@ -1497,7 +1512,7 @@ function renderTicketRows(tbodyId, tickets, isAdmin) {
         ? `<span class="reqtype-chip">${_e(t.request_type)}</span>`
         : '<span style="color:var(--text-muted);">—</span>';
       const assignedCell = t.assigned_to
-        ? `<span style="font-size:12px;">${_e(uname(t.assigned_to))}</span>`
+        ? `<span style="font-size:12px;">${_e(uname(t.assigned_to) || t.assignee_name || '—')}</span>`
         : '<span style="color:var(--text-muted);font-size:11px;">غير معين</span>';
       return `
       <tr onclick="openTicketDetail('${t.id}')">
@@ -1588,7 +1603,7 @@ async function openTicketDetail(id) {
   const outboundBanner = isOutbound
     ? `<div style="background:rgba(96,165,250,0.12);border:1px solid #60A5FA;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#60A5FA;display:flex;align-items:center;gap:10px;">
         📤 <div>
-          <strong>طلب صادر من فريقك</strong> · مقدم الطلب: ${_e(uname(t.created_by)||t.creator_name||'—')} من إدارة ${_e(Perm.myDept())}
+          <strong>طلب صادر من فريقك</strong> · مقدم الطلب: ${_e(creatorName(t))} من إدارة ${_e(Perm.myDept())}
           <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">يمكنك المتابعة والرد بتعليقات · تحديث الحالة يتم من إدارة <strong>${_e(t.target_department||'—')}</strong></div>
         </div>
       </div>`
@@ -1604,7 +1619,7 @@ async function openTicketDetail(id) {
   const comments = t.comments || [];
 
   const timelineItems = [
-    { author: uname(t.created_by)||t.creator_name||'—', action:'فتح التيكت', time:t.created_at, text:t.description, dot:'var(--gold)' },
+    { author: creatorName(t), action:'فتح التيكت', time:t.created_at, text:t.description, dot:'var(--gold)' },
     ...comments.map(c=>({ author: uname(c.user_id) || c.author_name || '—', action:'تعليق', time:c.created_at, text:c.content, dot:'#60A5FA' }))
   ];
 
@@ -1674,9 +1689,9 @@ async function openTicketDetail(id) {
           ['نوع الطلب', t.request_type
               ? `<span class="reqtype-chip">${_e(t.request_type)}</span>`
               : '—'],
-          ['مقدم الطلب', _e(uname(t.created_by)||t.creator_name||'—')],
-          ['قسم المقدم', _e(udept(t.created_by))],
-          ['المعين',     _e(t.assigned_to?uname(t.assigned_to):'غير معين')],
+          ['مقدم الطلب', _e(creatorName(t))],
+          ['قسم المقدم', _e(creatorDept(t))],
+          ['المعين',     _e(assigneeName(t))],
           ['التاريخ',    `<span style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</span>`],
         ].map(([k,v])=>`<div class="meta-row"><span class="meta-key">${k}</span><span class="meta-val">${v}</span></div>`).join('')}
       </div>
@@ -3320,7 +3335,7 @@ document.addEventListener('click',e=>{
 function exportCSV() {
   const rows = [['رقم التيكت','العنوان','مقدم الطلب','القسم','الأولوية','الحالة','المعين','التاريخ']];
   S.tickets.forEach(t=>{
-    rows.push([t.ticket_number,t.title,(uname(t.created_by)||t.creator_name||'—'),udept(t.created_by),PRIO_L[t.priority],STATUS_L[t.status],t.assigned_to?uname(t.assigned_to):'—',_d(t.created_at)]);
+    rows.push([t.ticket_number,t.title,creatorName(t),creatorDept(t),PRIO_L[t.priority],STATUS_L[t.status],assigneeName(t),_d(t.created_at)]);
   });
   const csv = rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
   const a = document.createElement('a');
@@ -3337,11 +3352,11 @@ function exportExcel() {
     t.title,
     t.target_department || (CAT_L[t.category] || t.category || '—'),
     t.request_type || '—',
-    (uname(t.created_by)||t.creator_name||'—'),
-    udept(t.created_by),
+    (creatorName(t)),
+    creatorDept(t),
     PRIO_L[t.priority] || t.priority,
     STATUS_L[t.status] || t.status,
-    t.assigned_to ? uname(t.assigned_to) : '—',
+    assigneeName(t),
     (t.attachments && t.attachments.length) ? `${t.attachments.length} ملف` : '—',
     _d(t.created_at)
   ]);
@@ -3690,7 +3705,7 @@ function renderArchive() {
               <tr>
                 <td><span class="tnum">${_e(t.ticket_number)}</span></td>
                 <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}</td>
-                <td>${_e(uname(t.created_by)||t.creator_name||'—')}</td>
+                <td>${_e(creatorName(t))}</td>
                 <td>${pbadge(t.priority)}</td>
                 <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
                 <td>
@@ -3709,7 +3724,7 @@ function renderArchive() {
 function filterArchive(q) {
   const archived = S.tickets.filter(t=>t.status==='archived');
   const filtered = q
-    ? archived.filter(t=>t.title.includes(q)||t.ticket_number.includes(q)||uname(t.created_by).includes(q))
+    ? archived.filter(t=>t.title.includes(q)||t.ticket_number.includes(q)||creatorName(t).includes(q))
     : archived;
   const tbody = $('archiveTbody');
   if (!tbody) return;
@@ -3717,7 +3732,7 @@ function filterArchive(q) {
     <tr>
       <td><span class="tnum">${_e(t.ticket_number)}</span></td>
       <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(t.title)}</td>
-      <td>${_e(uname(t.created_by)||t.creator_name||'—')}</td>
+      <td>${_e(creatorName(t))}</td>
       <td>${pbadge(t.priority)}</td>
       <td style="font-family:var(--font-mono);font-size:11px;">${_d(t.created_at)}</td>
       <td>
